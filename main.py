@@ -65,9 +65,7 @@ while True:
     # ---------------- TPU DETECTION ----------------
     t0 = time.time()
     if frame_counter % DETECT_EVERY_N_FRAMES == 0:
-        # Resize before detection to reduce TPU load
-        resize_frame = cv2.resize(frame, (192, 192))
-        detections = detector.detect(resize_frame)
+        detections = detector.detect(frame)
         tracks = tracker.update(detections)
     else:
         # Update tracker without new detections
@@ -106,7 +104,7 @@ while True:
         print("Red phase:", red_phase)
 
     # ---------------- DEBUG ----------------
- #   print(f"frame {frame_counter} | seconds {t4-tepoch:.3f} | fps {frame_counter/(t4-tepoch):.3f} |\n" + 
- #           f"detect+track: {t1-t0:.3f}s | draw: {t2-t1:.3f}s | imshow: {t4-t3:.3f}s | total: {t4-t0:.3f}s")
+    print(f"frame {frame_counter} | seconds {t4-tepoch:.3f} | fps {frame_counter/(t4-tepoch):.3f} |\n" + 
+            f"detect+track: {t1-t0:.3f}s | draw: {t2-t1:.3f}s | imshow: {t4-t3:.3f}s | total: {t4-t0:.3f}s")
 
 cv2.destroyAllWindows()
