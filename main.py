@@ -3,6 +3,7 @@ import subprocess
 import numpy as np
 import time
 import os
+from picamera2 import Picamera2
 import threading
 from detector.coral_yolo_detector import CoralYOLODetector
 from tracking.simple_tracker import SimpleTracker
@@ -13,8 +14,8 @@ WIDTH, HEIGHT = 640, 480
 STOP_LINE_Y_REL = 0.7
 SAVE_DIR = "frames"
 os.makedirs(SAVE_DIR, exist_ok=True)
-DRAW_EVERY_N_FRAMES = 2      # Reduce drawing frequency
-DETECT_EVERY_N_FRAMES = 10    # Run detection every N frames
+DRAW_EVERY_N_FRAMES = 1      # Reduce drawing frequency
+DETECT_EVERY_N_FRAMES = 1    # Run detection every N frames
 
 # ---------------- GLOBALS ----------------
 latest_frame = None
@@ -30,34 +31,18 @@ tepoch = time.time()
 # ---------------- CAMERA THREAD ----------------
 def camera_thread():
     global latest_frame, running
-    cmd = [
-        "rpicam-vid",
-        "--inline",
-        "-t","0",
-        "--width",str(WIDTH),
-        "--height",str(HEIGHT),
-        "--framerate","30",
-        "--codec","mjpeg",
-        "-o","-",
-    ]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    bytes_buffer = b""
+
+    picam2 = Picamera2()
+    config = picam2.create_preview_configuration(main={"size": (WIDTH, HEIGHT)})
+    picam2.configure(config)
+    picam2.start()
 
     while running:
-        chunk = p.stdout.read(262144)
-        if not chunk:
-            break
-        bytes_buffer += chunk
-        a = bytes_buffer.find(b'\xff\xd8')
-        b = bytes_buffer.find(b'\xff\xd9')
-        if a != -1 and b != -1 and b > a:
-            jpg = bytes_buffer[a:b+2]
-            bytes_buffer = bytes_buffer[b+2:]
-            frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if frame is not None:
-                with frame_lock:
-                    latest_frame = frame
-    p.terminate()
+        frame = picam2.capture_array()  # NumPy array, already in BGR format
+        with frame_lock:
+            latest_frame = frame
+        # tiny sleep to prevent CPU hogging
+        time.sleep(0.001)
 
 threading.Thread(target=camera_thread, daemon=True).start()
 
