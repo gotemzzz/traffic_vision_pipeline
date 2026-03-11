@@ -3,6 +3,7 @@ import time
 
 
 MAX_MATCH_DIST = 80
+STALE_TIMEOUT = 1.0  # seconds before a stale track is removed
 
 
 class SimpleTracker:
@@ -12,23 +13,23 @@ class SimpleTracker:
         self.tracks = {}
         self.next_id = 0
 
-    def update(self,detections):
+    def update(self, detections):
 
         now = time.time()
 
         for tid in self.tracks:
             self.tracks[tid]["matched"] = False
 
-        for cx,cy,x,y,w,h in detections:
+        for cx, cy, x, y, w, h in detections:
 
             best_id = None
             best_dist = None
 
-            for tid,data in self.tracks.items():
+            for tid, data in self.tracks.items():
 
-                px,py = data["pos"]
+                px, py = data["pos"]
 
-                d = math.hypot(cx-px,cy-py)
+                d = math.hypot(cx - px, cy - py)
 
                 if best_dist is None or d < best_dist:
                     best_dist = d
@@ -38,43 +39,51 @@ class SimpleTracker:
 
                 data = self.tracks[best_id]
 
-                px,py = data["pos"]
+                px, py = data["pos"]
 
                 dt = now - data["time"]
 
-                dist = math.hypot(cx-px,cy-py)
+                dist = math.hypot(cx - px, cy - py)
 
-                speed = dist/dt if dt>0 else 0
+                speed = dist / dt if dt > 0 else 0
 
-                data["pos"]=(cx,cy)
-                data["time"]=now
-                data["bbox"]=(x,y,w,h)
-                data["speed"]=speed
-                data["matched"]=True
+                data["pos"] = (cx, cy)
+                data["time"] = now
+                data["bbox"] = (x, y, w, h)
+                data["speed"] = speed
+                data["matched"] = True
 
             else:
 
-                tid=self.next_id
-                self.next_id+=1
+                tid = self.next_id
+                self.next_id += 1
 
-                self.tracks[tid]={
-                    "pos":(cx,cy),
-                    "time":now,
-                    "bbox":(x,y,w,h),
-                    "speed":0,
-                    "matched":True
+                self.tracks[tid] = {
+                    "pos": (cx, cy),
+                    "time": now,
+                    "bbox": (x, y, w, h),
+                    "speed": 0,
+                    "matched": True
                 }
 
-        results=[]
+        # --- Prune stale tracks that haven't been matched recently ---
+        stale_ids = [
+            tid for tid, data in self.tracks.items()
+            if not data["matched"] and (now - data["time"]) > STALE_TIMEOUT
+        ]
+        for tid in stale_ids:
+            del self.tracks[tid]
 
-        for tid,data in self.tracks.items():
+        results = []
 
-            x,y,w,h=data["bbox"]
+        for tid, data in self.tracks.items():
 
-            cx,cy=data["pos"]
+            x, y, w, h = data["bbox"]
 
-            speed=data["speed"]
+            cx, cy = data["pos"]
 
-            results.append((tid,cx,cy,x,y,w,h,speed))
+            speed = data["speed"]
+
+            results.append((tid, cx, cy, x, y, w, h, speed))
 
         return results
