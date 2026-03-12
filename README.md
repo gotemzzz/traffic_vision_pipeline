@@ -18,26 +18,30 @@ This repository specifically focuses on the traffic inringement unit or the __TF
 ```
 
 1. **Capture** — Live frames from the Pi camera (`real_time` mode) or images from a folder (`images` mode).
-2. **Detect** — Each frame is fed to a YOLOv8n model compiled for the Coral Edge TPU. The INT8 quantized output is dequantized and decoded (80 COCO classes). Only vehicle classes (car, motorcycle, bus, truck) are kept.
-3. **Track** — A lightweight centroid tracker matches detections across frames by proximity, assigning stable IDs and estimating pixel-space speed.
+2. **Detect** — Each frame is fed to a YOLOv8n model compiled for the Coral Edge TPU. The INT8 quantized output is dequantized, decoded (80 COCO classes), and filtered with Non-Maximum Suppression (NMS). Only vehicle classes (car, motorcycle, bus, truck) are kept.
+3. **Track** — A lightweight centroid tracker matches detections across frames by proximity, assigning stable IDs and estimating smoothed pixel-space speed via exponential moving average.
 4. **Risk Assessment** — During a red-light phase, vehicles approaching the stop line above a speed threshold are flagged as "at risk" of running the light.
-5. **Display** — Bounding boxes, track IDs, speeds, and risk labels are drawn on the frame and shown via OpenCV.
+5. **Display** — Bounding boxes with dark label backgrounds, track IDs, speeds, and risk labels are drawn on the frame and shown via OpenCV.
 
 ## Project Structure
 
 ```
 traffic_vision_pipeline/
-├── main.py                          # CLI entrypoint — dispatches to real_time or images mode
-├── run_real_time.py                  # Live camera detection loop
-├── run_images.py                    # Batch image detection + optional animation playback
+├── main.py                          # CLI entrypoint — dispatches to real_time, images, or animate
+├── run/
+│   ├── run_real_time.py             # Live camera detection loop
+│   └── run_images.py               # Batch image detection + optional animation playback
 ├── detector/
-│   └── coral_yolo_detector.py       # YOLOv8n Edge TPU inference + output decoding
+│   └── coral_yolo_detector.py       # YOLOv8n Edge TPU inference + NMS + output decoding
 ├── tracking/
-│   └── simple_tracker.py            # Centroid-based multi-object tracker
+│   └── simple_tracker.py            # Centroid-based multi-object tracker with EMA speed
 ├── risk/
 │   └── risk_logic.py                # Red-light risk evaluation logic
+├── drawing/
+│   ├── __init__.py
+│   └── overlay.py                   # Shared drawing helpers (boxes, labels, stop line)
 ├── models/
-│   └── yolov8n_full_integer_quant_edgetpu_192.tflite  # Quantized YOLOv8n model (not in repo)
+│   └── yolov8n_full_integer_quant_edgetpu_192.tflite  # Quantized YOLOv8n model
 ├── requirements.txt
 ├── test_delegate.py                 # Quick sanity check for Edge TPU delegate
 └── .gitignore
@@ -149,27 +153,35 @@ python main.py real_time --conf 0.20 --stop-line 0.65 --detect-every 2
 Run detection on a folder of images:
 
 ```bash
-python main.py images --input ./test_frames --output ./results
+python main.py images -i frames/input -o frames/output
 ```
 
 With red-light simulation and animation playback:
 
 ```bash
-python main.py images -i ./test_frames -o ./results --red --animate --fps 15
+python main.py images -i frames/input -o frames/output --red --animate --fps 15
 ```
 
 All image mode options:
 
 ```bash
 python main.py images \
-  --input ./test_frames \
-  --output ./results \
+  -i frames/input \
+  -o frames/output \
   --conf 0.20 \
   --red \
   --stop-line 0.65 \
   --no-track \
   --animate \
   --fps 10
+```
+
+### Animate mode (play back a folder)
+
+Play an existing folder of images as a video — no detection needed:
+
+```bash
+python main.py animate -i frames/output --fps 20
 ```
 
 **Controls during animation playback:**
@@ -179,7 +191,7 @@ python main.py images \
 | `Space` | Pause / resume |
 | `d` or `→` | Next frame (while paused) |
 | `a` or `←` | Previous frame (while paused) |
-| `q` | Quit playback |
+| `q` or `ESC` | Quit playback |
 
 ## Configuration Reference
 
@@ -207,29 +219,39 @@ python main.py images \
 | `--stop-line` | `0.7` | Stop line position (fraction of frame height) |
 | `--no-track` | off | Treat each image independently (no tracking) |
 | `--animate` | off | Play output images as video after processing |
-| `--fps` | `10` | Animation playback speed |
+| `--fps` | `10` | Animation playback speed and assumed frame interval for tracking |
+
+### Animate mode (`main.py animate`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--input`, `-i` | *(required)* | Folder of images to play |
+| `--fps` | `10` | Playback speed |
 
 ### Module-level parameters
 
-Risk thresholds in `risk/risk_logic.py`:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `MIN_SPEED` | `80` | Minimum speed (px/s) to be considered at risk |
-| `MAX_DIST` | `200` | Maximum distance (px) from stop line to trigger risk |
-
-Detection settings in `detector/coral_yolo_detector.py`:
+Detection in `detector/coral_yolo_detector.py`:
 
 | Parameter | Default | Description |
 |---|---|---|
 | `VEHICLE_CLASS_IDS` | `{2, 3, 5, 7}` | COCO class IDs to detect (car, motorcycle, bus, truck) |
+| `NMS_IOU_THRESHOLD` | `0.5` | IoU threshold for Non-Maximum Suppression |
 
-Tracker settings in `tracking/simple_tracker.py`:
+Tracking in `tracking/simple_tracker.py`:
 
 | Parameter | Default | Description |
 |---|---|---|
 | `MAX_MATCH_DIST` | `80` | Max pixel distance to match detection to existing track |
 | `STALE_TIMEOUT` | `1.0` | Seconds before an unmatched track is removed |
+| `SPEED_SMOOTHING` | `0.4` | EMA alpha for speed (higher = more responsive) |
+| `MIN_MOVE_PX` | `2` | Movements below this are treated as jitter (speed = 0) |
+
+Risk in `risk/risk_logic.py`:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `MIN_SPEED` | `80` | Minimum speed (px/s) to be considered at risk |
+| `MAX_DIST` | `200` | Maximum distance (px) from stop line to trigger risk |
 
 ## Troubleshooting
 
@@ -240,6 +262,7 @@ Tracker settings in `tracking/simple_tracker.py`:
 | Font warnings from Qt | Cosmetic only — does not affect functionality. Install `fonts-dejavu` if it bothers you. |
 | Very low FPS | Make sure the Coral is on a USB 3.0 port. Increase `--detect-every` to skip frames. |
 | Detections but no risk flags | Risk only triggers during red phase — press `r` in real_time mode or use `--red` in image mode. |
+| Overlapping/duplicate boxes | NMS should handle this. Try lowering `NMS_IOU_THRESHOLD` (e.g., `0.3`) for more aggressive suppression. |
 
 ## License
 

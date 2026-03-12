@@ -5,6 +5,7 @@ from picamera2 import Picamera2
 from detector.coral_yolo_detector import CoralYOLODetector
 from tracking.simple_tracker import SimpleTracker
 from risk.risk_logic import evaluate_risk
+from drawing.overlay import draw_tracks
 
 
 def run_real_time(args):
@@ -71,19 +72,7 @@ def run_real_time(args):
 
         # ---------------- DRAWING ----------------
         if frame_counter % draw_every == 0:
-            for track in tracks:
-                tid, cx, cy, x, y, w_box, h_box, speed = track
-                risk = evaluate_risk(red_phase, cy, stop_line_y, speed)
-                color = (0, 0, 255) if risk else (0, 255, 0)
-                cv2.rectangle(frame, (x, y), (x + w_box, y + h_box), color, 2)
-                label = f"ID {tid} {int(speed)}px/s" + (" RISK" if risk else "")
-                cv2.putText(frame, label, (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-            cv2.line(frame, (0, stop_line_y), (width, stop_line_y), (0, 255, 255), 2)
-            phase = "RED" if red_phase else "GREEN"
-            cv2.putText(frame, phase, (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+            draw_tracks(frame, tracks, evaluate_risk, red_phase, stop_line_y)
 
         t2 = time.time()
 

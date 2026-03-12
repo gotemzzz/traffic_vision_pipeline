@@ -27,9 +27,9 @@ def main():
 
     # ---- images ----
     img = subparsers.add_parser("images", help="Run detection on a folder of images")
-    img.add_argument("--input", "-i", required=True,
+    img.add_argument("--input", "-i", default=None,
                      help="Path to folder of input images")
-    img.add_argument("--output", "-o", required=True,
+    img.add_argument("--output", "-o", default=None,
                      help="Path to folder for output images")
     img.add_argument("--model", "-m",
                      default="models/yolov8n_full_integer_quant_edgetpu_192.tflite",
@@ -47,6 +47,13 @@ def main():
     img.add_argument("--fps", type=int, default=10,
                      help="Playback FPS for --animate (default: 10)")
 
+    # ---- animate ----
+    anim = subparsers.add_parser("animate", help="Play a folder of images as a video slideshow")
+    anim.add_argument("--input", "-i", required=True,
+                      help="Path to folder of images to play")
+    anim.add_argument("--fps", type=int, default=10,
+                      help="Playback FPS (default: 10)")
+
     # ---- help fallback ----
     if len(sys.argv) == 1:
         parser.print_help()
@@ -60,6 +67,9 @@ def main():
     elif args.command == "images":
         from run.run_images import run_images
         run_images(args)
+    elif args.command == "animate":
+        from run.run_images import run_animate
+        run_animate(args)
     else:
         parser.print_help()
         sys.exit(1)

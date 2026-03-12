@@ -6,22 +6,33 @@ import glob
 from detector.coral_yolo_detector import CoralYOLODetector
 from tracking.simple_tracker import SimpleTracker
 from risk.risk_logic import evaluate_risk
+from drawing.overlay import draw_tracks
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 
 
+def gather_images(directory):
+    """Collect and sort all image files in a directory."""
+    return sorted([
+        p for p in glob.glob(os.path.join(directory, "*"))
+        if os.path.splitext(p)[1].lower() in IMAGE_EXTS
+    ])
+
+
 def run_images(args):
     # ---------------- VALIDATE ----------------
+    if not args.input or not args.output:
+        print("Error: --input and --output are required for image processing.")
+        print("  Use 'python main.py animate -i <folder>' to just play back images.")
+        sys.exit(1)
+
     if not os.path.isdir(args.input):
         print(f"Error: input directory '{args.input}' does not exist")
         sys.exit(1)
 
     os.makedirs(args.output, exist_ok=True)
 
-    image_paths = sorted([
-        p for p in glob.glob(os.path.join(args.input, "*"))
-        if os.path.splitext(p)[1].lower() in IMAGE_EXTS
-    ])
+    image_paths = gather_images(args.input)
 
     if not image_paths:
         print(f"Error: no images found in '{args.input}'")
@@ -33,14 +44,14 @@ def run_images(args):
 
     # ---------------- INIT ----------------
     detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
-    tracker = SimpleTracker()
-    
+    tracker = SimpleTracker(fixed_dt=1.0 / args.fps)
+
     # Clear output directory
     try:
-        shutil.rmtree("frames/output/")
-        os.makedirs("frames/output/")
+        shutil.rmtree(args.output)
+        os.makedirs(args.output)
     except FileNotFoundError:
-        print("Couldn't locate \"frames/output\"")
+        pass
     except Exception as e:
         print("Error clearing output directory: ", e)
 
@@ -55,10 +66,8 @@ def run_images(args):
 
         # Ensure 3-channel BGR regardless of source format
         if len(frame.shape) == 2:
-            # Grayscale -> BGR
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         elif frame.shape[2] == 4:
-            # BGRA/XBGR -> BGR
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
         h, w, _ = frame.shape
@@ -77,19 +86,7 @@ def run_images(args):
             tracks = tracker.update(detections)
 
         # Draw
-        for track in tracks:
-            tid, cx, cy, x, y, w_box, h_box, speed = track
-            risk = evaluate_risk(args.red, cy, stop_line_y, speed)
-            color = (0, 0, 255) if risk else (0, 255, 0)
-            cv2.rectangle(frame, (x, y), (x + w_box, y + h_box), color, 2)
-            label = f"ID {tid} {int(speed)}px/s" + (" RISK" if risk else "")
-            cv2.putText(frame, label, (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-        cv2.line(frame, (0, stop_line_y), (w, stop_line_y), (0, 255, 255), 2)
-        phase = "RED" if args.red else "GREEN"
-        cv2.putText(frame, phase, (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        draw_tracks(frame, tracks, evaluate_risk, args.red, stop_line_y)
 
         # Save — always as PNG for consistency
         filename = os.path.splitext(os.path.basename(img_path))[0] + ".png"
@@ -108,6 +105,21 @@ def run_images(args):
         animate(output_paths, args.fps)
 
 
+def run_animate(args):
+    """Entrypoint for the standalone 'animate' subcommand."""
+    if not os.path.isdir(args.input):
+        print(f"Error: directory '{args.input}' does not exist")
+        sys.exit(1)
+
+    image_paths = gather_images(args.input)
+
+    if not image_paths:
+        print(f"Error: no images found in '{args.input}'")
+        sys.exit(1)
+
+    animate(image_paths, args.fps)
+
+
 def animate(image_paths, fps=10):
     """Play output images as a video slideshow in an OpenCV window."""
     delay = max(1, int(1000 / fps))
@@ -116,7 +128,6 @@ def animate(image_paths, fps=10):
     print(f"\nPlaying {total} frames at {fps} FPS "
           f"(press 'q' to quit, SPACE to pause/resume, a/d to step)")
 
-    # Pre-read first frame to set up window
     first = cv2.imread(image_paths[0], cv2.IMREAD_COLOR)
     if first is None:
         print(f"Error: could not read first frame: {image_paths[0]}")
@@ -128,14 +139,12 @@ def animate(image_paths, fps=10):
     idx = 0
 
     while True:
-        # Read current frame
         frame = cv2.imread(image_paths[idx], cv2.IMREAD_COLOR)
         if frame is None:
             print(f"  Warning: skipping unreadable frame: {image_paths[idx]}")
             idx = (idx + 1) % total
             continue
 
-        # Overlay frame counter
         label = f"Frame {idx+1}/{total}"
         cv2.putText(frame, label, (20, frame.shape[0] - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -145,23 +154,21 @@ def animate(image_paths, fps=10):
 
         cv2.imshow("Traffic Vision — Animate", frame)
 
-        # Wait for key — indefinitely if paused, else timed
         key = cv2.waitKey(0 if paused else delay) & 0xFF
 
-        if key == ord('q') or key == 27:  # q or ESC
+        if key == ord('q') or key == 27:
             break
         elif key == ord(' '):
             paused = not paused
-        elif key == ord('d') or key == 83:  # d or right arrow
+        elif key == ord('d') or key == 83:
             idx = (idx + 1) % total
-        elif key == ord('a') or key == 81:  # a or left arrow
+        elif key == ord('a') or key == 81:
             idx = (idx - 1) % total
         else:
-            # Auto-advance when not paused
             if not paused:
                 idx += 1
                 if idx >= total:
-                    idx = 0  # loop
+                    idx = 0
 
     cv2.destroyAllWindows()
     print("Playback finished.")

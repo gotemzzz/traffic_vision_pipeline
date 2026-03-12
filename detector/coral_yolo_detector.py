@@ -6,6 +6,10 @@ from tflite_runtime.interpreter import load_delegate
 # COCO classes that count as vehicles
 VEHICLE_CLASS_IDS = {2, 3, 5, 7}  # car, motorcycle, bus, truck
 
+# NMS parameters
+NMS_IOU_THRESHOLD = 0.5
+
+
 class CoralYOLODetector:
     def __init__(self, model_path, conf_threshold=0.25):
         # Load TFLite model with Edge TPU delegate
@@ -72,8 +76,8 @@ class CoralYOLODetector:
         output_data = output_data.T
 
         # Split: first 4 = box coords, remaining 80 = class scores
-        boxes = output_data[:, :4]          # (cx, cy, w, h) normalized 0-1
-        class_scores = output_data[:, 4:]   # 80 COCO class scores
+        boxes_norm = output_data[:, :4]       # (cx, cy, w, h) normalized 0-1
+        class_scores = output_data[:, 4:]     # 80 COCO class scores
 
         # Best class per anchor
         class_ids = np.argmax(class_scores, axis=1)
@@ -81,52 +85,63 @@ class CoralYOLODetector:
 
         # Filter by confidence
         mask = scores > self.conf_threshold
-        boxes = boxes[mask]
+        boxes_norm = boxes_norm[mask]
         scores = scores[mask]
         class_ids = class_ids[mask]
 
-        if len(boxes) == 0:
+        if len(boxes_norm) == 0:
             return []
 
         h_orig, w_orig, _ = frame.shape
 
+        # Convert to pixel coordinates for NMS
+        # boxes_norm is (cx, cy, w, h) normalized
+        cx_px = boxes_norm[:, 0] * w_orig
+        cy_px = boxes_norm[:, 1] * h_orig
+        bw_px = boxes_norm[:, 2] * w_orig
+        bh_px = boxes_norm[:, 3] * h_orig
+
+        x1 = (cx_px - bw_px / 2).astype(int)
+        y1 = (cy_px - bh_px / 2).astype(int)
+        x2 = (cx_px + bw_px / 2).astype(int)
+        y2 = (cy_px + bh_px / 2).astype(int)
+
+        # Clamp
+        x1 = np.clip(x1, 0, w_orig)
+        y1 = np.clip(y1, 0, h_orig)
+        x2 = np.clip(x2, 0, w_orig)
+        y2 = np.clip(y2, 0, h_orig)
+
+        # OpenCV NMS expects (x, y, w, h) as a list of lists, and scores as a list
+        nms_boxes = np.stack([x1, y1, x2 - x1, y2 - y1], axis=1).tolist()
+        nms_scores = scores.tolist()
+
+        indices = cv2.dnn.NMSBoxes(nms_boxes, nms_scores,
+                                   self.conf_threshold, NMS_IOU_THRESHOLD)
+
+        if len(indices) == 0:
+            return []
+
+        # Flatten — NMSBoxes returns [[0],[1],[2]] in some OpenCV versions
+        if isinstance(indices[0], (list, np.ndarray)):
+            indices = [i[0] for i in indices]
+
         detections = []
-        for i in range(len(boxes)):
-            cx_n, cy_n, bw_n, bh_n = boxes[i]
-            score = scores[i]
+        for i in indices:
             class_id = int(class_ids[i])
 
-            # Optional: filter to vehicle classes only
-            # Remove this check if you want to detect all 80 classes
+            # Filter to vehicle classes only
             if class_id not in VEHICLE_CLASS_IDS:
                 continue
 
-            # Convert normalized coords to original frame pixels
-            cx_px = cx_n * w_orig
-            cy_px = cy_n * h_orig
-            bw_px = bw_n * w_orig
-            bh_px = bh_n * h_orig
+            bx, by, bw, bh = nms_boxes[i]
 
-            x_min = int(cx_px - bw_px / 2)
-            y_min = int(cy_px - bh_px / 2)
-            x_max = int(cx_px + bw_px / 2)
-            y_max = int(cy_px + bh_px / 2)
-
-            # Clamp to frame bounds
-            x_min = max(0, x_min)
-            y_min = max(0, y_min)
-            x_max = min(w_orig, x_max)
-            y_max = min(h_orig, y_max)
-
-            w_box = x_max - x_min
-            h_box = y_max - y_min
-
-            if w_box <= 0 or h_box <= 0:
+            if bw <= 0 or bh <= 0:
                 continue
 
-            cx_out = int((x_min + x_max) / 2)
-            cy_out = int((y_min + y_max) / 2)
+            cx_out = int(bx + bw / 2)
+            cy_out = int(by + bh / 2)
 
-            detections.append([cx_out, cy_out, x_min, y_min, w_box, h_box])
+            detections.append([cx_out, cy_out, int(bx), int(by), int(bw), int(bh)])
 
         return detections
