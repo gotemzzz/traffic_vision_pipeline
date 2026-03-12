@@ -140,6 +140,16 @@ python main.py
 | `r` | Toggle red-light phase (GREEN ↔ RED) |
 | `q` | Quit |
 
+## Batch Mode (Image Folder)
+
+You can also run the pipeline on a folder of images instead of a live camera feed:
+
+```bash
+python run_images.py --input ./test_frames --output ./results
+```
+
+Run `python run_images.py --help` for all options.
+
 ## Configuration
 
 Key parameters can be tuned at the top of `main.py`:
