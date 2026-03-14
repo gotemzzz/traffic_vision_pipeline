@@ -106,6 +106,12 @@ models/your_full_integer_quant_edgetpu_192.tflite
 > pip install ultralytics
 > yolo export model=yolov8n.pt format=edgetpu imgsz=192 # replace with your model
 > ```
+> Additionally, some prebuilt YOLO models can be found here as well:
+> ```
+> https://github.com/jveitchmichaelis/edgetpu-yolo/
+> or
+> https://gweb-coral-full.uc.r.appspot.com/models/object-detection/
+> ```
 > Make sure that you also replace the line in main.py that loads the model:
 > ```
 > detector = CoralYOLODetector("models/your_full_integer_quant_edgetpu_192.tflite")
