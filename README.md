@@ -18,7 +18,7 @@ This repository specifically focuses on the traffic inringement unit or the __TF
 ```
 
 1. **Capture** — Live frames from the Pi camera (`real_time` mode) or images from a folder (`images` mode).
-2. **Detect** — Each frame is fed to a YOLOv8n model compiled for the Coral Edge TPU. The INT8 quantized output is dequantized, decoded (80 COCO classes), and filtered with Non-Maximum Suppression (NMS). Only vehicle classes (car, motorcycle, bus, truck) are kept.
+2. **Detect** — Each frame is fed to a YOLOv8n model compiled for the Coral Edge TPU. The INT8 quantized output is dequantized, decoded (80 COCO classes), and filtered with Non-Maximum Suppression (NMS). Only vehicle classes (car, motorcycle, bus, truck) are kept. *(Note: EfficientDet models can also be used and leverage a custom TFLite C++ op for NMS).*
 3. **Track** — A lightweight centroid tracker matches detections across frames by proximity, assigning stable IDs and estimating smoothed pixel-space speed via exponential moving average.
 4. **Risk Assessment** — During a red-light phase, vehicles approaching the stop line above a speed threshold are flagged as "at risk" of running the light.
 5. **Display** — Bounding boxes with dark label backgrounds, track IDs, speeds, and risk labels are drawn on the frame and shown via OpenCV.
@@ -59,24 +59,29 @@ traffic_vision_pipeline/
 
 ## Software Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (Native to Raspberry Pi OS Bookworm)
 - `libcamera` and `picamera2` (ships with Raspberry Pi OS) — only needed for `real_time` mode
-- Google Coral Edge TPU runtime (`libedgetpu`)
 - A display or VNC session (for the OpenCV preview window)
 
 ## Setup Guide
 
-### 1. Install the Coral Edge TPU runtime
+**CRITICAL NOTE FOR RASPBERRY PI OS BOOKWORM (PYTHON 3.11):** 
+Google officially stopped updating the Coral apt repositories at Python 3.9/TF 2.5. Installing the official Google apt packages on a modern Pi will result in instant Segmentation Faults when running certain models (like EfficientDet) due to missing C++ custom ops and memory mapping mismatches. The steps below use the updated community-maintained wheels and drivers by `feranick` to fix this.
+
+### 1. Install the Modern Edge TPU Driver (feranick fork)
+
+Do not use Google's official apt repository. Instead, download the compiled `.deb` driver that matches modern TensorFlow (v2.17.1).
 
 ```bash
-echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | \
-  sudo tee /etc/apt/sources.list.d/coral-edgetpu.list
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
-sudo apt update
-sudo apt install libedgetpu1-std
-```
+# Download the maximum performance driver (or use libedgetpu1-std for standard clock)
+wget https://github.com/feranick/libedgetpu/releases/download/16.0TF2.17.1-1/libedgetpu1-max_16.0tf2.17.1-1.bookworm_arm64.deb
 
-> **Note:** Use `libedgetpu1-std` for standard clock speed. For maximum performance you can install `libedgetpu1-max` instead, but it draws more power and produces more heat.
+# Install it
+sudo dpkg -i libedgetpu1-max_16.0tf2.17.1-1.bookworm_arm64.deb
+
+# Reload shared libraries
+sudo ldconfig
+```
 
 ### 2. Clone the repository
 
@@ -88,12 +93,29 @@ cd traffic_vision_pipeline
 ### 3. Create a virtual environment and install dependencies
 
 ```bash
-python3 -m venv .venv
+# Create the environment with system site packages enabled (required for picamera2)
+python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
+
+# Install general requirements
 pip install -r requirements.txt
 ```
 
-### 4. Add Your Edge TPU model
+### 4. Install the Patched TFLite and PyCoral Wheels
+To prevent segmentation faults when using models containing custom operations (like EfficientDet's `TFLite_Detection_PostProcess`), you must install Python 3.11 specific wheels.
+
+```bash
+# Ensure you are still in your virtual environment!
+# Download the TF 2.17.1 wheels for Python 3.11 (cp311) on 64-bit ARM (aarch64)
+wget https://github.com/feranick/TFlite-builds/releases/download/v2.17.1/tflite_runtime-2.17.1-cp311-cp311-linux_aarch64.whl
+wget https://github.com/feranick/pycoral/releases/download/2.0.3TF2.17.1/pycoral-2.0.3-cp311-cp311-linux_aarch64.whl
+
+# Install them
+pip install tflite_runtime-2.17.1-cp311-cp311-linux_aarch64.whl
+pip install pycoral-2.0.3-cp311-cp311-linux_aarch64.whl
+```
+
+### 5. Add Your Edge TPU model
 
 Place your quantized TFLite model in the `models/` directory:
 
@@ -117,7 +139,7 @@ models/your_full_integer_quant_edgetpu_192.tflite
 > detector = CoralYOLODetector("models/your_full_integer_quant_edgetpu_192.tflite")
 > ```
 
-### 5. Verify the Edge TPU is detected
+### 6. Verify the Edge TPU is detected
 
 Plug in the Coral USB Accelerator, then:
 
@@ -131,7 +153,7 @@ You should see:
 OK
 ```
 
-If this fails, check that the Coral is plugged into a **USB 3.0 port** (blue) and that `libedgetpu` is installed.
+If this fails, check that the Coral is plugged into a **USB 3.0 port** (blue).
 
 ## Usage
 
@@ -263,6 +285,7 @@ Risk in `risk/risk_logic.py`:
 
 | Issue | Fix |
 |---|---|
+| **`Segmentation fault`** when loading models | Your system `libedgetpu.so` driver version does not match your `tflite_runtime` python wheel. Ensure you are using the feranick wheels and `.deb` driver as specified in the Setup Guide. |
 | `ValueError: Failed to load delegate from libedgetpu.so.1` | Coral USB not plugged in, or `libedgetpu` not installed. Run `test_delegate.py` to verify. |
 | `No cameras available` | Check CSI ribbon cable and run `libcamera-hello` to verify the camera works. Only applies to `real_time` mode. |
 | Font warnings from Qt | Cosmetic only — does not affect functionality. Install `fonts-dejavu` if it bothers you. |

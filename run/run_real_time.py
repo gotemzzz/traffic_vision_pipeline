@@ -26,7 +26,14 @@ def run_real_time(args):
     frame_lock = threading.Lock()
     running = True
 
-    detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
+    # Dynamically select the right parser based on model name
+    if "yolo" in args.model.lower():
+        from detector.coral_yolo_detector import CoralYOLODetector
+        detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
+    else:
+        from detector.coral_tfod_detector import CoralTFODDetector
+        detector = CoralTFODDetector(args.model, conf_threshold=args.conf)
+        
     tracker = SimpleTracker()
     red_phase = False
 

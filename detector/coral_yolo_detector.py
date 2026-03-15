@@ -38,7 +38,7 @@ class CoralYOLODetector:
         if self.input_details[0]['dtype'] != np.int8:
             raise ValueError(f"Expected INT8 model, got {self.input_details[0]['dtype']}")
 
-        print(f"[MODEL] input: {self.input_details[0]['shape']} | "
+        print(f"[MODEL] YOLO Loaded | input: {self.input_details[0]['shape']} | "
               f"output: {self.output_details[0]['shape']} | "
               f"scale: {self.out_scale}, zp: {self.out_zero_point}")
 

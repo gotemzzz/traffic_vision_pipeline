@@ -43,7 +43,15 @@ def run_images(args):
     print(f"Red phase: {'ON' if args.red else 'OFF'} | Stop line: {args.stop_line}")
 
     # ---------------- INIT ----------------
-    detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
+    
+    # Dynamically select the right parser based on model name
+    if "yolo" in args.model.lower():
+        from detector.coral_yolo_detector import CoralYOLODetector
+        detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
+    else:
+        from detector.coral_tfod_detector import CoralTFODDetector
+        detector = CoralTFODDetector(args.model, conf_threshold=args.conf)
+    
     tracker = SimpleTracker(fixed_dt=1.0 / args.fps)
 
     # Clear output directory
