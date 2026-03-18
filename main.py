@@ -37,7 +37,9 @@ def main():
     img.add_argument("--conf", type=float, default=0.25,
                      help="Confidence threshold (default: 0.25)")
     img.add_argument("--red", action="store_true",
-                     help="Simulate red-light phase for risk evaluation")
+                     help="Simulate red-light phase for all frames (use --transitions for per-frame control)")
+    img.add_argument("--transitions", type=str, default=None,
+                     help="Frame-based traffic light transitions (e.g., 'green:0-50,red:51-150,green:151-end')")
     img.add_argument("--stop-line", type=float, default=0.7,
                      help="Stop line position as fraction of frame height (default: 0.7)")
     img.add_argument("--no-track", action="store_true",

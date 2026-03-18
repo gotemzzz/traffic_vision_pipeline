@@ -19,6 +19,77 @@ def gather_images(directory):
     ])
 
 
+def parse_transitions(transitions_str, total_frames):
+    """
+    Parse transition string like 'green:0-50,red:51-150,green:151-end' into a list of (phase, ranges).
+    Returns a list of tuples: [(phase, start, end), ...]
+    Validates for overlaps and out-of-bounds ranges.
+    """
+    if not transitions_str:
+        return None
+    
+    transitions = []
+    for segment in transitions_str.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        
+        parts = segment.split(":")
+        if len(parts) != 2:
+            print(f"Error: Invalid transition format '{segment}'. Expected 'phase:start-end'")
+            sys.exit(1)
+        
+        phase = parts[0].strip().lower()
+        if phase not in ("red", "green"):
+            print(f"Error: Phase must be 'red' or 'green', got '{phase}'")
+            sys.exit(1)
+        
+        range_str = parts[1].strip()
+        range_parts = range_str.split("-")
+        if len(range_parts) != 2:
+            print(f"Error: Invalid range format '{range_str}'. Expected 'start-end'")
+            sys.exit(1)
+        
+        try:
+            start_str, end_str = range_parts[0].strip(), range_parts[1].strip()
+            start = int(start_str)
+            end = int(end_str) if end_str != "end" else total_frames - 1
+            
+            if start < 0 or end >= total_frames:
+                print(f"Error: Frame range {start}-{end} out of bounds (0-{total_frames - 1})")
+                sys.exit(1)
+            
+            if start > end:
+                print(f"Error: Invalid range {start}-{end} (start > end)")
+                sys.exit(1)
+            
+            transitions.append((phase, start, end))
+        except ValueError:
+            print(f"Error: Could not parse frame numbers in '{range_str}'")
+            sys.exit(1)
+    
+    # Check for overlaps
+    for i, (phase1, start1, end1) in enumerate(transitions):
+        for phase2, start2, end2 in transitions[i+1:]:
+            if not (end1 < start2 or end2 < start1):
+                print(f"Error: Overlapping ranges detected: {start1}-{end1} and {start2}-{end2}")
+                sys.exit(1)
+    
+    return sorted(transitions, key=lambda x: x[1])
+
+
+def get_red_phase_for_frame(frame_idx, transitions):
+    """Determine if frame should be in red phase based on transitions."""
+    if transitions is None:
+        return False  # Default to green
+    
+    for phase, start, end in transitions:
+        if start <= frame_idx <= end:
+            return phase == "red"
+    
+    return False  # Default to green if no transition matches
+
+
 def run_images(args):
     # ---------------- VALIDATE ----------------
     if not args.input or not args.output:
@@ -40,7 +111,16 @@ def run_images(args):
 
     print(f"Found {len(image_paths)} images in '{args.input}'")
     print(f"Output will be saved to '{args.output}'")
-    print(f"Red phase: {'ON' if args.red else 'OFF'} | Stop line: {args.stop_line}")
+    
+    # Parse transitions if provided
+    transitions = None
+    if args.transitions:
+        transitions = parse_transitions(args.transitions, len(image_paths))
+        print(f"Traffic light transitions: {args.transitions}")
+    elif args.red:
+        print(f"Red phase: ON | Stop line: {args.stop_line}")
+    else:
+        print(f"Red phase: OFF | Stop line: {args.stop_line}")
 
     # ---------------- INIT ----------------
     
@@ -93,8 +173,14 @@ def run_images(args):
         else:
             tracks = tracker.update(detections)
 
+        # Determine red phase for this frame
+        if transitions:
+            is_red_phase = get_red_phase_for_frame(idx, transitions)
+        else:
+            is_red_phase = args.red
+
         # Draw
-        draw_tracks(frame, tracks, evaluate_risk, args.red, stop_line_y)
+        draw_tracks(frame, tracks, evaluate_risk, is_red_phase, stop_line_y)
 
         # Save — always as PNG for consistency
         filename = os.path.splitext(os.path.basename(img_path))[0] + ".png"
@@ -103,8 +189,9 @@ def run_images(args):
         output_paths.append(out_path)
 
         n_det = len(tracks)
+        phase_str = "RED" if is_red_phase else "GREEN"
         print(f"  [{idx+1}/{len(image_paths)}] {os.path.basename(img_path)} — "
-              f"{n_det} detection{'s' if n_det != 1 else ''} → {out_path}")
+              f"{phase_str} | {n_det} detection{'s' if n_det != 1 else ''} → {out_path}")
 
     print(f"\nDone! {len(output_paths)} images processed → '{args.output}'")
 
@@ -130,7 +217,7 @@ def run_animate(args):
 
 def animate(image_paths, fps=10):
     """Play output images as a video slideshow in an OpenCV window."""
-    target_frame_time = 1000 / fps  # milliseconds per frame
+    target_frame_time = 1000 / fps
     total = len(image_paths)
 
     print(f"\nPlaying {total} frames at {fps} FPS "
