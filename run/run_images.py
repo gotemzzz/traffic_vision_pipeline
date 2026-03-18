@@ -91,10 +91,16 @@ def get_red_phase_for_frame(frame_idx, transitions):
 
 
 def run_images(args):
+    # Handle real-time mode separately
+    if args.real_time:
+        run_images_real_time(args)
+        return
+    
+    # Standard file-processing mode
     # ---------------- VALIDATE ----------------
     if not args.input or not args.output:
         print("Error: --input and --output are required for image processing.")
-        print("  Use 'python main.py animate -i <folder>' to just play back images.")
+        print("  Use 'python main.py images --input <folder> --real-time' to process without saving files.")
         sys.exit(1)
 
     if not os.path.isdir(args.input):
@@ -198,6 +204,159 @@ def run_images(args):
     # ---------------- ANIMATE ----------------
     if args.animate and output_paths:
         animate(output_paths, args.fps)
+
+
+def run_images_real_time(args):
+    """Process and display frames in real-time (inference → render on-the-fly)."""
+    # ---------------- VALIDATE ----------------
+    if not args.input:
+        print("Error: --input is required")
+        sys.exit(1)
+
+    if not os.path.isdir(args.input):
+        print(f"Error: input directory '{args.input}' does not exist")
+        sys.exit(1)
+
+    image_paths = gather_images(args.input)
+
+    if not image_paths:
+        print(f"Error: no images found in '{args.input}'")
+        sys.exit(1)
+
+    print(f"Found {len(image_paths)} images in '{args.input}'")
+    
+    # Parse transitions if provided
+    transitions = None
+    if args.transitions:
+        transitions = parse_transitions(args.transitions, len(image_paths))
+        print(f"Traffic light transitions: {args.transitions}")
+    elif args.red:
+        print(f"Red phase: ON | Stop line: {args.stop_line}")
+    else:
+        print(f"Red phase: OFF | Stop line: {args.stop_line}")
+    
+    print(f"Target FPS: {args.fps}")
+    print("Press 'q' to stop, SPACE to pause/resume, a/d to step frames")
+
+    # ---------------- INIT ----------------
+    
+    # Dynamically select the right parser based on model name
+    if "yolo" in args.model.lower():
+        from detector.coral_yolo_detector import CoralYOLODetector
+        detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
+    else:
+        from detector.coral_tfod_detector import CoralTFODDetector
+        detector = CoralTFODDetector(args.model, conf_threshold=args.conf)
+    
+    tracker = SimpleTracker(fixed_dt=1.0 / args.fps)
+
+    cv2.namedWindow("Traffic Vision — Real-Time", cv2.WINDOW_AUTOSIZE)
+
+    target_frame_time = 1000 / args.fps
+    paused = False
+    idx = 0
+    total = len(image_paths)
+    frame_times = []  # Track actual frame times for stats
+
+    # Print header
+    print(f"\n{'Frame':<8} {'Phase':<8} {'Dets':<6} {'FPS':<8} {'Time':<8}")
+    print("-" * 45)
+
+    while idx < total:
+        frame_start = cv2.getTickCount()
+        
+        img_path = image_paths[idx]
+        frame = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if frame is None:
+            print(f"[{idx+1}/{total}] SKIP (unreadable): {os.path.basename(img_path)}")
+            idx += 1
+            continue
+
+        # Ensure 3-channel BGR regardless of source format
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        h, w, _ = frame.shape
+        stop_line_y = int(args.stop_line * h)
+
+        # Detect
+        detections = detector.detect(frame)
+
+        # Track
+        if args.no_track:
+            tracks = []
+            for i, det in enumerate(detections):
+                cx, cy, x, y, bw, bh = det
+                tracks.append((i, cx, cy, x, y, bw, bh, 0))
+        else:
+            tracks = tracker.update(detections)
+
+        # Determine red phase for this frame
+        if transitions:
+            is_red_phase = get_red_phase_for_frame(idx, transitions)
+        else:
+            is_red_phase = args.red
+
+        # Draw
+        draw_tracks(frame, tracks, evaluate_risk, is_red_phase, stop_line_y)
+
+        # Calculate processing time
+        processing_time_ms = (cv2.getTickCount() - frame_start) / cv2.getTickFrequency() * 1000
+        
+        # Add frame info overlay
+        frame_label = f"Frame {idx+1}/{total}"
+        cv2.putText(frame, frame_label, (20, frame.shape[0] - 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        time_label = f"Process: {processing_time_ms:.1f}ms"
+        cv2.putText(frame, time_label, (20, frame.shape[0] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        if paused:
+            cv2.putText(frame, "PAUSED", (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+        cv2.imshow("Traffic Vision — Real-Time", frame)
+
+        # Calculate wait time to maintain target FPS
+        wait_time = max(1, int(target_frame_time - processing_time_ms))
+        key = cv2.waitKey(0 if paused else wait_time) & 0xFF
+
+        # Handle keyboard input
+        if key == ord('q') or key == 27:
+            break
+        elif key == ord(' '):
+            paused = not paused
+        elif key == ord('d') or key == 83:
+            idx = min(idx + 1, total - 1)
+        elif key == ord('a') or key == 81:
+            idx = max(idx - 1, 0)
+        else:
+            if not paused:
+                # Track frame time
+                frame_times.append(processing_time_ms)
+                
+                # Print stats
+                n_det = len(tracks)
+                phase_str = "RED" if is_red_phase else "GREEN"
+                avg_fps = 1000 / (sum(frame_times[-30:]) / len(frame_times[-30:])) if frame_times else 0
+                print(f"{idx+1:<8} {phase_str:<8} {n_det:<6} {avg_fps:>6.1f}   {processing_time_ms:>6.1f}ms")
+                
+                idx += 1
+
+    cv2.destroyAllWindows()
+    
+    if frame_times:
+        avg_time = sum(frame_times) / len(frame_times)
+        avg_fps = 1000 / avg_time
+        print(f"\n--- Summary ---")
+        print(f"Frames processed: {len(frame_times)}/{total}")
+        print(f"Average frame time: {avg_time:.1f}ms")
+        print(f"Average FPS: {avg_fps:.1f}")
+    
+    print("Playback finished.")
 
 
 def run_animate(args):

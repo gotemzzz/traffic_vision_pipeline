@@ -30,7 +30,7 @@ def main():
     img.add_argument("--input", "-i", default=None,
                      help="Path to folder of input images")
     img.add_argument("--output", "-o", default=None,
-                     help="Path to folder for output images")
+                     help="Path to folder for output images (not required with --real-time)")
     img.add_argument("--model", "-m",
                      default="models/yolov8n_full_integer_quant_edgetpu_192.tflite",
                      help="Path to Edge TPU TFLite model")
@@ -44,10 +44,12 @@ def main():
                      help="Stop line position as fraction of frame height (default: 0.7)")
     img.add_argument("--no-track", action="store_true",
                      help="Disable tracking (treat each image independently)")
+    img.add_argument("--real-time", action="store_true",
+                     help="Process and display frames in real-time (inference → render on-the-fly, no file output)")
     img.add_argument("--animate", action="store_true",
                      help="After processing, play output images as a video slideshow")
     img.add_argument("--fps", type=int, default=10,
-                     help="Playback FPS for --animate (default: 10)")
+                     help="Playback/inference FPS (default: 10)")
 
     # ---- animate ----
     anim = subparsers.add_parser("animate", help="Play a folder of images as a video slideshow")
