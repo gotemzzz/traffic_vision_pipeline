@@ -130,7 +130,7 @@ def run_animate(args):
 
 def animate(image_paths, fps=10):
     """Play output images as a video slideshow in an OpenCV window."""
-    delay = max(1, int(1000 / fps))
+    target_frame_time = 1000 / fps  # milliseconds per frame
     total = len(image_paths)
 
     print(f"\nPlaying {total} frames at {fps} FPS "
@@ -147,6 +147,8 @@ def animate(image_paths, fps=10):
     idx = 0
 
     while True:
+        frame_start = cv2.getTickCount()
+        
         frame = cv2.imread(image_paths[idx], cv2.IMREAD_COLOR)
         if frame is None:
             print(f"  Warning: skipping unreadable frame: {image_paths[idx]}")
@@ -162,7 +164,12 @@ def animate(image_paths, fps=10):
 
         cv2.imshow("Traffic Vision — Animate", frame)
 
-        key = cv2.waitKey(0 if paused else delay) & 0xFF
+        # Calculate how much time we spent on processing
+        elapsed_ms = (cv2.getTickCount() - frame_start) / cv2.getTickFrequency() * 1000
+        # Subtract processing time from target frame time
+        wait_time = max(1, int(target_frame_time - elapsed_ms))
+
+        key = cv2.waitKey(0 if paused else wait_time) & 0xFF
 
         if key == ord('q') or key == 27:
             break
