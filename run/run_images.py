@@ -185,8 +185,16 @@ def run_images(args):
         else:
             is_red_phase = args.red
 
+        # Update violation status for each track
+        updated_tracks = []
+        for track in tracks:
+            tid, cx, cy, x, y, w_box, h_box, speed, violation = track
+            from risk.risk_logic import update_violation_status
+            updated_violation = update_violation_status(track, stop_line_y, is_red_phase)
+            updated_tracks.append((tid, cx, cy, x, y, w_box, h_box, speed, updated_violation))
+        
         # Draw
-        draw_tracks(frame, tracks, evaluate_risk, is_red_phase, stop_line_y)
+        draw_tracks(frame, updated_tracks, evaluate_risk, is_red_phase, stop_line_y)
 
         # Save — always as PNG for consistency
         filename = os.path.splitext(os.path.basename(img_path))[0] + ".png"

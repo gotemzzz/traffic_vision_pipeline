@@ -6,23 +6,25 @@ def draw_tracks(frame, tracks, risk_fn, red_phase, stop_line_y):
 
     Args:
         frame:       BGR image (modified in-place)
-        tracks:      list of (tid, cx, cy, x, y, w, h, speed)
-        risk_fn:     callable(red_phase, cy, stop_line_y, speed) -> bool
+        tracks:      list of (tid, cx, cy, x, y, w, h, speed, violation)
+        risk_fn:     callable(red_phase, cy, stop_line_y, speed, violation_history) -> bool
         red_phase:   whether the light is red
         stop_line_y: pixel y-coordinate of the stop line
     """
     h, w = frame.shape[:2]
 
     for track in tracks:
-        tid, cx, cy, x, y, w_box, h_box, speed = track
-        risk = risk_fn(red_phase, cy, stop_line_y, speed)
+        tid, cx, cy, x, y, w_box, h_box, speed, violation = track
+        
+        # Evaluate risk using the violation history
+        risk = risk_fn(red_phase, cy, stop_line_y, speed, violation)
         color = (0, 0, 255) if risk else (0, 255, 0)
 
         # Bounding box
         cv2.rectangle(frame, (x, y), (x + w_box, y + h_box), color, 2)
 
         # Label with background for readability
-        label = f"ID {tid} {int(speed)}px/s" + (" RISK" if risk else "")
+        label = f"ID {tid} {int(speed)}px/s" + (" VIOLATION" if risk else "")
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.5
         thickness = 1

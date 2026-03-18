@@ -4,8 +4,9 @@ import time
 
 MAX_MATCH_DIST = 80
 STALE_TIMEOUT = 1.0
-SPEED_SMOOTHING = 0.4
-MIN_MOVE_PX = 2
+SPEED_SMOOTHING = 0.25  # Increased from 0.4 for better stability
+MIN_MOVE_PX = 3  # Increased from 2 to reduce jitter
+STATIONARY_SPEED_THRESHOLD = 5.0  # Lock speed at 0 if below this
 
 
 class SimpleTracker:
@@ -65,6 +66,10 @@ class SimpleTracker:
                 else:
                     smoothed = SPEED_SMOOTHING * inst_speed + (1 - SPEED_SMOOTHING) * prev_speed
 
+                # Lock speed at 0 if it's below stationary threshold
+                if smoothed < STATIONARY_SPEED_THRESHOLD:
+                    smoothed = 0.0
+
                 data["pos"] = (cx, cy)
                 data["time"] = now
                 data["bbox"] = (x, y, w, h)
@@ -81,7 +86,9 @@ class SimpleTracker:
                     "time": now,
                     "bbox": (x, y, w, h),
                     "speed": 0,
-                    "matched": True
+                    "matched": True,
+                    "violation": False,  # Track if vehicle ever violated
+                    "violation_frame": None  # Frame when violation occurred
                 }
 
         stale_ids = [
@@ -97,6 +104,7 @@ class SimpleTracker:
             x, y, w, h = data["bbox"]
             cx, cy = data["pos"]
             speed = data["speed"]
-            results.append((tid, cx, cy, x, y, w, h, speed))
+            violation = data.get("violation", False)
+            results.append((tid, cx, cy, x, y, w, h, speed, violation))
 
         return results
