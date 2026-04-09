@@ -14,8 +14,8 @@ def main():
     rt.add_argument("--model", "-m",
                     default="models/yolov8n_full_integer_quant_edgetpu_192.tflite",
                     help="Path to Edge TPU TFLite model")
-    rt.add_argument("--conf", type=float, default=0.25,
-                    help="Confidence threshold (default: 0.25)")
+    rt.add_argument("--conf", type=float, default=0.35,
+                    help="Confidence threshold (default: 0.35)")
     rt.add_argument("--width", type=int, default=640, help="Camera width (default: 640)")
     rt.add_argument("--height", type=int, default=480, help="Camera height (default: 480)")
     rt.add_argument("--stop-line", type=float, default=0.7,
@@ -28,6 +28,10 @@ def main():
                     help="Enable photoresistor gateway (GPIO pin set by --light-pin)")
     rt.add_argument("--light-pin", type=int, default=17,
                     help="GPIO pin for light sensor input (default: 17)")
+    rt.add_argument("--approach-vx", type=float, default=0.0,
+                    help="Approach direction vector X component (default: 0.0)")
+    rt.add_argument("--approach-vy", type=float, default=1.0,
+                    help="Approach direction vector Y component (default: 1.0)")
 
     # ---- images ----
     img = subparsers.add_parser("images", help="Run detection on a folder of images")
@@ -38,8 +42,8 @@ def main():
     img.add_argument("--model", "-m",
                      default="models/yolov8n_full_integer_quant_edgetpu_192.tflite",
                      help="Path to Edge TPU TFLite model")
-    img.add_argument("--conf", type=float, default=0.25,
-                     help="Confidence threshold (default: 0.25)")
+    img.add_argument("--conf", type=float, default=0.35,
+                     help="Confidence threshold (default: 0.35)")
     img.add_argument("--red", action="store_true",
                      help="Simulate red-light phase for all frames (use --transitions for per-frame control)")
     img.add_argument("--transitions", type=str, default=None,
@@ -55,9 +59,13 @@ def main():
     img.add_argument("--fps", type=int, default=10,
                      help="Playback/inference FPS (default: 10)")
     img.add_argument("--light-sensor", action="store_true",
-                     help="Enable photoresistor gateway in --real-time mode (GPIO pin set by --light-pin)")
+                     help="Enable photoresistor gateway in --real-time mode")
     img.add_argument("--light-pin", type=int, default=17,
                      help="GPIO pin for light sensor input (default: 17)")
+    img.add_argument("--approach-vx", type=float, default=0.0,
+                     help="Approach direction vector X component (default: 0.0)")
+    img.add_argument("--approach-vy", type=float, default=1.0,
+                     help="Approach direction vector Y component (default: 1.0)")
 
     # ---- animate ----
     anim = subparsers.add_parser("animate", help="Play a folder of images as a video slideshow")
@@ -65,6 +73,37 @@ def main():
                       help="Path to folder of images to play")
     anim.add_argument("--fps", type=int, default=10,
                       help="Playback FPS (default: 10)")
+
+    # ---- monitor (production/headless; sensor REQUIRED) ----
+    mon = subparsers.add_parser("monitor", help="Headless production mode (no drawing, alarm GPIO, light sensor required)")
+    mon.add_argument("--model", "-m",
+                     default="models/yolov8n_full_integer_quant_edgetpu_192.tflite",
+                     help="Path to Edge TPU TFLite model")
+    mon.add_argument("--conf", type=float, default=0.35,
+                     help="Confidence threshold (default: 0.35)")
+    mon.add_argument("--width", type=int, default=640, help="Camera width")
+    mon.add_argument("--height", type=int, default=480, help="Camera height")
+    mon.add_argument("--stop-line", type=float, default=0.7,
+                     help="Stop line position as fraction of frame height")
+    mon.add_argument("--detect-every", type=int, default=1,
+                     help="Run detection every N frames")
+
+    mon.add_argument("--light-pin", type=int, default=17,
+                     help="GPIO pin for light sensor (required in monitor mode)")
+
+    mon.add_argument("--alarm-pin", type=int, default=None,
+                     help="GPIO output pin for alarm signal (HIGH=alarm)")
+    mon.add_argument("--dry-run", action="store_true",
+                     help="Do not write GPIO alarm output; only log alarm transitions")
+    mon.add_argument("--alarm-on-frames", type=int, default=3,
+                     help="Consecutive violating frames required to turn alarm ON")
+    mon.add_argument("--alarm-off-frames", type=int, default=8,
+                     help="Consecutive clear frames required to turn alarm OFF")
+
+    mon.add_argument("--approach-vx", type=float, default=0.0,
+                     help="Approach direction vector X component")
+    mon.add_argument("--approach-vy", type=float, default=1.0,
+                     help="Approach direction vector Y component")
 
     # ---- help fallback ----
     if len(sys.argv) == 1:
@@ -82,6 +121,9 @@ def main():
     elif args.command == "animate":
         from run.run_images import run_animate
         run_animate(args)
+    elif args.command == "monitor":
+        from run.run_monitor import run_monitor
+        run_monitor(args)
     else:
         parser.print_help()
         sys.exit(1)
