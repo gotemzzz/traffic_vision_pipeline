@@ -33,6 +33,16 @@ def main():
     rt.add_argument("--approach-vy", type=float, default=1.0,
                     help="Approach direction vector Y component (default: 1.0)")
 
+    # NEW: optional frame saving for replay with animate
+    rt.add_argument("--save-frames", action="store_true",
+                    help="Save processed real-time frames to disk")
+    rt.add_argument("--save-dir", type=str, default="output/real_time_frames",
+                    help="Directory where real-time frames are saved (default: output/real_time_frames)")
+    rt.add_argument("--save-every", type=int, default=1,
+                    help="Save every Nth frame (default: 1)")
+    rt.add_argument("--save-prefix", type=str, default="frame",
+                    help="Filename prefix for saved frames (default: frame)")
+
     # ---- images ----
     img = subparsers.add_parser("images", help="Run detection on a folder of images")
     img.add_argument("--input", "-i", default=None,
@@ -74,7 +84,7 @@ def main():
     anim.add_argument("--fps", type=int, default=10,
                       help="Playback FPS (default: 10)")
 
-    # ---- monitor (production/headless; sensor REQUIRED) ----
+    # ---- monitor ----
     mon = subparsers.add_parser("monitor", help="Headless production mode (no drawing, alarm GPIO, light sensor required)")
     mon.add_argument("--model", "-m",
                      default="models/yolov8n_full_integer_quant_edgetpu_192.tflite",
@@ -87,10 +97,8 @@ def main():
                      help="Stop line position as fraction of frame height")
     mon.add_argument("--detect-every", type=int, default=1,
                      help="Run detection every N frames")
-
     mon.add_argument("--light-pin", type=int, default=17,
                      help="GPIO pin for light sensor (required in monitor mode)")
-
     mon.add_argument("--alarm-pin", type=int, default=None,
                      help="GPIO output pin for alarm signal (HIGH=alarm)")
     mon.add_argument("--dry-run", action="store_true",
@@ -99,13 +107,11 @@ def main():
                      help="Consecutive violating frames required to turn alarm ON")
     mon.add_argument("--alarm-off-frames", type=int, default=8,
                      help="Consecutive clear frames required to turn alarm OFF")
-
     mon.add_argument("--approach-vx", type=float, default=0.0,
                      help="Approach direction vector X component")
     mon.add_argument("--approach-vy", type=float, default=1.0,
                      help="Approach direction vector Y component")
 
-    # ---- help fallback ----
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)

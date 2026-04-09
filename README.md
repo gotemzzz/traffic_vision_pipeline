@@ -1,297 +1,404 @@
 # TEAM 17 RED LIGHT RUNNER DETECTION
 
-## SS26 ECE480 Captsone Project ~~ Traffic Infringement Unit
+## SS26 ECE480 Capstone Project ~~ Traffic Infringement Unit
 
-This repository showcases our addition to the project that was set up for us by the previous two groups. The project itself is a real-time red light violation detection unit. It consists of four parts: the state detection unit, the traffic infringement unit, the alarm unit, and the power supply.
+This repository showcases our addition to the project that was set up by the previous two groups.  
+The full project has four units:
 
-This repository specifically focuses on the traffic inringement unit or the __TFU__. The TFU provides the system with real-time vehicle detection and red-light risk assessment running on a Raspberry Pi 4 with a Google Coral Edge TPU. The pipeline captures live camera frames, runs YOLOv8n inference on the TPU, tracks vehicles across frames, and flags vehicles at risk of running a red light.
+1. State Detection Unit  
+2. Traffic Infringement Unit (**TFU**, this repo)  
+3. Alarm Unit  
+4. Power Supply
+
+This repository focuses on the **Traffic Infringement Unit (TFU)**: real-time vehicle detection and red-light risk assessment on a Raspberry Pi 4 with a Google Coral Edge TPU.
 
 ---
 
 ## Pipeline Overview
 
-```
-┌─────────────┐    ┌──────────────────┐    ┌────────────────┐    ┌─────────────┐    ┌────────────┐
-│  Pi Camera  │ -> │  YOLOv8n INT8    │ -> │ Simple Tracker │ -> │ Risk Logic  │ -> │  Display   │
-│ (picamera2) │    │  (Coral Edge TPU)│    │ (ID + speed)   │    │ (red-light) │    │  (OpenCV)  │
-└─────────────┘    └──────────────────┘    └────────────────┘    └─────────────┘    └────────────┘
-```
+The TFU pipeline runs as a staged processing flow:
 
-1. **Capture** — Live frames from the Pi camera (`real_time` mode) or images from a folder (`images` mode).
-2. **Detect** — Each frame is fed to a YOLOv8n model compiled for the Coral Edge TPU. The INT8 quantized output is dequantized, decoded (80 COCO classes), and filtered with Non-Maximum Suppression (NMS). Only vehicle classes (car, motorcycle, bus, truck) are kept. *(Note: EfficientDet models can also be used and leverage a custom TFLite C++ op for NMS).*
-3. **Track** — A lightweight centroid tracker matches detections across frames by proximity, assigning stable IDs and estimating smoothed pixel-space speed via exponential moving average.
-4. **Risk Assessment** — During a red-light phase, vehicles approaching the stop line above a speed threshold are flagged as "at risk" of running the light.
-5. **Display** — Bounding boxes with dark label backgrounds, track IDs, speeds, and risk labels are drawn on the frame and shown via OpenCV.
+| Stage | Module(s) | What it does | Output |
+|---|---|---|---|
+| 1. Capture | `picamera2` / image loader | Reads camera frames (`real_time` / `monitor`) or folder images (`images`) | Raw BGR frame |
+| 2. Detect | `detector/coral_yolo_detector.py` or `detector/coral_tfod_detector.py` | Runs Edge TPU inference, confidence filtering, NMS, and duplicate suppression | Vehicle detections `(cx, cy, x, y, w, h)` |
+| 3. Track | `tracking/simple_tracker.py` | Matches detections frame-to-frame, assigns stable IDs, smooths velocity vectors | Tracks with ID + speed + motion direction |
+| 4. Risk Assessment | `risk/risk_logic.py` | Applies red-phase + direction-aware logic to determine risk/violation status | Per-track risk/violation state |
+| 5. Output | `drawing/overlay.py` / `run/run_monitor.py` | Draw modes: overlays + labels. Monitor mode: alarm GPIO with hysteresis/debounce | Annotated frames or alarm signal |
+
+### End-to-end flow (plain language)
+
+1. **Capture** a frame from camera or input folder.  
+2. **Detect** vehicles on the Edge TPU model.  
+3. **Track** those vehicles across frames and estimate smoothed motion/speed.  
+4. **Evaluate risk** only under red-phase logic with direction gating.  
+5. **Emit output**:
+   - `real_time` / `images`: draw visual annotations
+   - `monitor`: run headless alarm logic (GPIO output optional, dry-run supported)
+
+### Mode behavior summary
+
+| Mode | Input | Display | Alarm GPIO | Light Sensor |
+|---|---|---|---|---|
+| `real_time` | Live camera | Yes | No | Optional (`--light-sensor`) |
+| `images` | Folder images | Optional (`--real-time`) | No | Optional in `--real-time` |
+| `animate` | Folder images | Yes (playback only) | No | No |
+| `monitor` | Live camera | No (headless) | Optional (`--alarm-pin`) | **Required (always used)** |
+
+---
+
+## Modes
+
+- `real_time` — Live camera with overlays and keyboard controls
+- `images` — Batch folder processing (plus optional real-time playback mode)
+- `animate` — Playback folder of frames
+- `monitor` — Headless production mode (light sensor required, optional alarm GPIO, optional dry-run)
+
+---
 
 ## Project Structure
 
-```
+```text
 traffic_vision_pipeline/
-├── main.py                          # CLI entrypoint — dispatches to real_time, images, or animate
+├── main.py
 ├── run/
-│   ├── run_real_time.py             # Live camera detection loop
-│   └── run_images.py               # Batch image detection + optional animation playback
+│   ├── run_real_time.py
+│   ├── run_images.py
+│   └── run_monitor.py
 ├── detector/
-│   └── coral_yolo_detector.py       # YOLOv8n Edge TPU inference + NMS + output decoding
+│   ├── coral_yolo_detector.py
+│   └── coral_tfod_detector.py
 ├── tracking/
-│   └── simple_tracker.py            # Centroid-based multi-object tracker with EMA speed
+│   └── simple_tracker.py
 ├── risk/
-│   └── risk_logic.py                # Red-light risk evaluation logic
+│   └── risk_logic.py
 ├── drawing/
-│   ├── __init__.py
-│   └── overlay.py                   # Shared drawing helpers (boxes, labels, stop line)
+│   └── overlay.py
+├── sensors/
+│   └── light_sensor.py
 ├── models/
-│   └── yolov8n_full_integer_quant_edgetpu_192.tflite  # Quantized YOLOv8n model
 ├── requirements.txt
-├── test_delegate.py                 # Quick sanity check for Edge TPU delegate
-└── .gitignore
+├── test_delegate.py
+└── README.md
 ```
+
+---
 
 ## Hardware Requirements
 
 | Component | Details |
 |---|---|
-| **Single-board computer** | Raspberry Pi 4 (4 GB+ RAM recommended) |
+| **SBC** | Raspberry Pi 4 (4GB+ recommended) |
 | **AI accelerator** | [Google Coral USB Accelerator](https://coral.ai/products/accelerator/) |
-| **Camera** | Any Pi-compatible CSI camera (tested with IMX296 mono sensor) — only needed for `real_time` mode |
+| **Camera** | Pi-compatible CSI camera (tested with IMX296 mono) |
 | **OS** | Raspberry Pi OS (64-bit / Bookworm recommended) |
-| **Power** | 5V 3A USB-C power supply |
+| **Power** | 5V 3A USB-C |
+| **Light sensor (optional in dev, required in monitor)** | Photoresistor divider or digital light sensor into GPIO input |
+| **Alarm output (monitor mode optional)** | GPIO output pin to alarm relay/buzzer/controller |
+
+---
 
 ## Software Prerequisites
 
-- Python 3.11+ (Native to Raspberry Pi OS Bookworm)
-- `libcamera` and `picamera2` (ships with Raspberry Pi OS) — only needed for `real_time` mode
-- A display or VNC session (for the OpenCV preview window)
+- Python 3.11+ (Bookworm default)
+- `libcamera` + `picamera2` (real_time/monitor)
+- display/VNC only needed for visual modes (`real_time`, `images --real-time`, `animate`)
 
-## Setup Guide
+---
 
-**CRITICAL NOTE FOR RASPBERRY PI OS BOOKWORM (PYTHON 3.11):** 
-Google officially stopped updating the Coral apt repositories at Python 3.9/TF 2.5. Installing the official Google apt packages on a modern Pi will result in instant Segmentation Faults when running certain models (like EfficientDet) due to missing C++ custom ops and memory mapping mismatches. The steps below use the updated community-maintained wheels and drivers by `feranick` to fix this.
+## Setup Guide (IMPORTANT — KEEP THIS)
 
-### 1. Install the Modern Edge TPU Driver (feranick fork)
+## CRITICAL NOTE FOR RASPBERRY PI OS BOOKWORM (PYTHON 3.11)
 
-Do not use Google's official apt repository. Instead, download the compiled `.deb` driver that matches modern TensorFlow (v2.17.1).
+Google’s official Coral apt packages are old (Python 3.9 / older TF tooling).  
+Using those with modern Bookworm Python commonly causes segmentation faults (especially for models with custom ops).  
+Use the community-maintained `feranick` builds below.
+
+### 1) Install modern Edge TPU driver (feranick fork)
 
 ```bash
-# Download the maximum performance driver (or use libedgetpu1-std for standard clock)
 wget https://github.com/feranick/libedgetpu/releases/download/16.0TF2.17.1-1/libedgetpu1-max_16.0tf2.17.1-1.bookworm_arm64.deb
-
-# Install it
 sudo dpkg -i libedgetpu1-max_16.0tf2.17.1-1.bookworm_arm64.deb
-
-# Reload shared libraries
 sudo ldconfig
 ```
 
-### 2. Clone the repository
+### 2) Clone
 
 ```bash
 git clone https://github.com/gotemzzz/traffic_vision_pipeline.git
 cd traffic_vision_pipeline
 ```
 
-### 3. Create a virtual environment and install dependencies
+### 3) Create venv + install requirements
 
 ```bash
-# Create the environment with system site packages enabled (required for picamera2)
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
-
-# Install general requirements
 pip install -r requirements.txt
 ```
 
-### 4. Install the Patched TFLite and PyCoral Wheels
-To prevent segmentation faults when using models containing custom operations (like EfficientDet's `TFLite_Detection_PostProcess`), you must install Python 3.11 specific wheels.
+### 4) Install patched `tflite_runtime` and `pycoral` wheels (cp311 aarch64)
 
 ```bash
-# Ensure you are still in your virtual environment!
-# Download the TF 2.17.1 wheels for Python 3.11 (cp311) on 64-bit ARM (aarch64)
 wget https://github.com/feranick/TFlite-builds/releases/download/v2.17.1/tflite_runtime-2.17.1-cp311-cp311-linux_aarch64.whl
 wget https://github.com/feranick/pycoral/releases/download/2.0.3TF2.17.1/pycoral-2.0.3-cp311-cp311-linux_aarch64.whl
 
-# Install them
 pip install tflite_runtime-2.17.1-cp311-cp311-linux_aarch64.whl
 pip install pycoral-2.0.3-cp311-cp311-linux_aarch64.whl
 ```
 
-### 5. Add Your Edge TPU model
+### 5) Add model(s)
 
-Place your quantized TFLite model in the `models/` directory:
+Place quantized Edge TPU model(s) in `models/`.
 
+Example:
+```text
+models/yolov8n_full_integer_quant_edgetpu_192.tflite
 ```
-models/your_full_integer_quant_edgetpu_192.tflite
-```
 
-> The yolov8n model originally used is included in the repository, so you are not required to import your own. If you wish, however, you can export one yourself using [Ultralytics](https://docs.ultralytics.com/modes/export/):
-> ```bash
-> pip install ultralytics
-> yolo export model=yolov8n.pt format=edgetpu imgsz=192 # replace with your model
-> ```
-> Additionally, some prebuilt YOLO models can be found here as well:
-> ```
-> https://github.com/jveitchmichaelis/edgetpu-yolo/
-> or
-> https://gweb-coral-full.uc.r.appspot.com/models/object-detection/
-> ```
-> Make sure that you also replace the line in main.py that loads the model:
-> ```
-> detector = CoralYOLODetector("models/your_full_integer_quant_edgetpu_192.tflite")
-> ```
+Optional model export resources:
+- https://docs.ultralytics.com/modes/export/
+- https://github.com/jveitchmichaelis/edgetpu-yolo/
+- https://gweb-coral-full.uc.r.appspot.com/models/object-detection/
 
-### 6. Verify the Edge TPU is detected
-
-Plug in the Coral USB Accelerator, then:
+### 6) Verify TPU delegate
 
 ```bash
 python test_delegate.py
 ```
 
-You should see:
-
-```
+Expected:
+```text
 OK
 ```
 
-If this fails, check that the Coral is plugged into a **USB 3.0 port** (blue).
+---
 
 ## Usage
 
-### Real-time mode (live camera)
+## A) real_time (live camera + overlays)
 
 ```bash
 python main.py real_time
 ```
 
-With options:
-
+Example:
 ```bash
-python main.py real_time --conf 0.20 --stop-line 0.65 --detect-every 2
+python main.py real_time \
+  --conf 0.35 \
+  --stop-line 0.65 \
+  --detect-every 2 \
+  --light-sensor --light-pin 17 \
+  --approach-vx 0.0 --approach-vy 1.0
 ```
 
-**Controls during real-time mode:**
+Controls:
+- `q` quit
+- `r` toggle red phase (manual mode only; disabled when light sensor is enabled)
 
-| Key | Action |
-|---|---|
-| `r` | Toggle red-light phase (GREEN ↔ RED) |
-| `q` | Quit |
+### Save real-time frames for replay (NEW)
 
-### Image batch mode
+```bash
+python main.py real_time \
+  --save-frames \
+  --save-dir output/real_run_01 \
+  --save-every 1 \
+  --save-prefix frame
+```
 
-Run detection on a folder of images:
+Replay with:
+```bash
+python main.py animate -i output/real_run_01 --fps 10
+```
+
+---
+
+## B) images (batch processing)
 
 ```bash
 python main.py images -i frames/input -o frames/output
 ```
 
-With red-light simulation and animation playback:
-
+Simulated red:
 ```bash
-python main.py images -i frames/input -o frames/output --red --animate --fps 15
+python main.py images -i frames/input -o frames/output --red
 ```
 
-All image mode options:
-
+Transitions (kept; not removed):
 ```bash
 python main.py images \
   -i frames/input \
   -o frames/output \
-  --conf 0.20 \
-  --red \
-  --stop-line 0.65 \
-  --no-track \
-  --animate \
-  --fps 10
+  --transitions "green:0-50,red:51-150,green:151-end"
 ```
 
-### Animate mode (play back a folder)
+Real-time playback of input folder:
+```bash
+python main.py images -i frames/input --real-time --fps 10
+```
 
-Play an existing folder of images as a video — no detection needed:
+With light sensor in images real-time mode:
+```bash
+python main.py images -i frames/input --real-time --light-sensor --light-pin 17
+```
+
+---
+
+## C) animate
 
 ```bash
 python main.py animate -i frames/output --fps 20
 ```
 
-**Controls during animation playback:**
+Controls:
+- `Space` pause/resume
+- `d` / `→` next frame
+- `a` / `←` previous frame
+- `q` / `ESC` quit
 
-| Key | Action |
-|---|---|
-| `Space` | Pause / resume |
-| `d` or `→` | Next frame (while paused) |
-| `a` or `←` | Previous frame (while paused) |
-| `q` or `ESC` | Quit playback |
+---
+
+## D) monitor (headless production mode)
+
+`monitor` is designed for deployment:
+- no drawing/display
+- **light sensor is required and always used**
+- optional GPIO alarm output
+- hysteresis/debounce
+- dry-run support
+
+### Dry run (recommended first)
+
+```bash
+python main.py monitor \
+  --light-pin 17 \
+  --alarm-pin 27 \
+  --dry-run \
+  --alarm-on-frames 3 \
+  --alarm-off-frames 8
+```
+
+### Live alarm mode
+
+```bash
+python main.py monitor \
+  --light-pin 17 \
+  --alarm-pin 27 \
+  --alarm-on-frames 3 \
+  --alarm-off-frames 8 \
+  --approach-vx 0.0 --approach-vy 1.0
+```
+
+---
 
 ## Configuration Reference
 
-### Real-time mode (`main.py real_time`)
+## real_time flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model`, `-m` | `models/yolov8n_...tflite` | Path to Edge TPU TFLite model |
-| `--conf` | `0.25` | Confidence threshold |
-| `--width` | `640` | Camera capture width |
-| `--height` | `480` | Camera capture height |
-| `--stop-line` | `0.7` | Stop line position (fraction of frame height) |
-| `--detect-every` | `1` | Run detection every N frames |
-| `--draw-every` | `1` | Draw overlays every N frames |
+| `--model`, `-m` | yolov8n tflite | Edge TPU model path |
+| `--conf` | `0.35` | detector confidence |
+| `--width` | `640` | camera width |
+| `--height` | `480` | camera height |
+| `--stop-line` | `0.7` | stop line position (frame fraction) |
+| `--detect-every` | `1` | detect every N frames |
+| `--draw-every` | `1` | draw every N frames |
+| `--light-sensor` | off | enable sensor gate |
+| `--light-pin` | `17` | sensor GPIO pin |
+| `--approach-vx` | `0.0` | approach vector x |
+| `--approach-vy` | `1.0` | approach vector y |
+| `--save-frames` | off | save processed real-time frames |
+| `--save-dir` | `output/real_time_frames` | frame output folder |
+| `--save-every` | `1` | save every N frames |
+| `--save-prefix` | `frame` | output file prefix |
 
-### Image mode (`main.py images`)
-
-| Flag | Default | Description |
-|---|---|---|
-| `--input`, `-i` | *(required)* | Input image folder |
-| `--output`, `-o` | *(required)* | Output image folder |
-| `--model`, `-m` | `models/yolov8n_...tflite` | Path to Edge TPU TFLite model |
-| `--conf` | `0.25` | Confidence threshold |
-| `--red` | off | Simulate red-light phase |
-| `--stop-line` | `0.7` | Stop line position (fraction of frame height) |
-| `--no-track` | off | Treat each image independently (no tracking) |
-| `--animate` | off | Play output images as video after processing |
-| `--fps` | `10` | Animation playback speed and assumed frame interval for tracking |
-
-### Animate mode (`main.py animate`)
+## images flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--input`, `-i` | *(required)* | Folder of images to play |
-| `--fps` | `10` | Playback speed |
+| `--input`, `-i` | required | input folder |
+| `--output`, `-o` | required (unless `--real-time`) | output folder |
+| `--model`, `-m` | yolov8n tflite | model path |
+| `--conf` | `0.35` | confidence |
+| `--red` | off | force red phase |
+| `--transitions` | none | frame phase map |
+| `--stop-line` | `0.7` | stop line fraction |
+| `--no-track` | off | disable tracking |
+| `--real-time` | off | display pipeline in real-time |
+| `--animate` | off | animate outputs after processing |
+| `--fps` | `10` | playback/assumed timing |
+| `--light-sensor` | off | sensor gate for `--real-time` |
+| `--light-pin` | `17` | sensor pin |
+| `--approach-vx` | `0.0` | approach vector x |
+| `--approach-vy` | `1.0` | approach vector y |
 
-### Module-level parameters
+## monitor flags
 
-Detection in `detector/coral_yolo_detector.py`:
-
-| Parameter | Default | Description |
+| Flag | Default | Description |
 |---|---|---|
-| `VEHICLE_CLASS_IDS` | `{2, 3, 5, 7}` | COCO class IDs to detect (car, motorcycle, bus, truck) |
-| `NMS_IOU_THRESHOLD` | `0.5` | IoU threshold for Non-Maximum Suppression |
+| `--model`, `-m` | yolov8n tflite | model path |
+| `--conf` | `0.35` | confidence |
+| `--width` | `640` | camera width |
+| `--height` | `480` | camera height |
+| `--stop-line` | `0.7` | stop line fraction |
+| `--detect-every` | `1` | detect every N frames |
+| `--light-pin` | `17` | **required sensor input** |
+| `--alarm-pin` | none | GPIO output for alarm |
+| `--dry-run` | off | no GPIO writes, log transitions only |
+| `--alarm-on-frames` | `3` | hysteresis ON debounce |
+| `--alarm-off-frames` | `8` | hysteresis OFF debounce |
+| `--approach-vx` | `0.0` | approach vector x |
+| `--approach-vy` | `1.0` | approach vector y |
 
-Tracking in `tracking/simple_tracker.py`:
+---
 
-| Parameter | Default | Description |
-|---|---|---|
-| `MAX_MATCH_DIST` | `80` | Max pixel distance to match detection to existing track |
-| `STALE_TIMEOUT` | `1.0` | Seconds before an unmatched track is removed |
-| `SPEED_SMOOTHING` | `0.4` | EMA alpha for speed (higher = more responsive) |
-| `MIN_MOVE_PX` | `2` | Movements below this are treated as jitter (speed = 0) |
+## Implementation Notes / What Changed
 
-Risk in `risk/risk_logic.py`:
+- Direction-aware risk gating to reduce horizontal traffic false positives.
+- Tracker now carries smoothed velocity vectors.
+- Detector dedupe improved:
+  - confidence filter
+  - min box area filter
+  - center-distance dedupe
+  - IoU dedupe
+- `monitor` mode added with hysteresis alarm logic.
+- `monitor --dry-run` added for safe bench testing.
+- `real_time` frame saving added for replay via `animate`.
 
-| Parameter | Default | Description |
-|---|---|---|
-| `MIN_SPEED` | `80` | Minimum speed (px/s) to be considered at risk |
-| `MAX_DIST` | `200` | Maximum distance (px) from stop line to trigger risk |
+---
+
+## Light Sensor Logic
+
+In `sensors/light_sensor.py`:
+
+- GPIO `0` => RED (detection active)
+- GPIO `1` => GREEN (detection gated off)
+
+Adjust wiring/pull resistors accordingly.
+
+---
 
 ## Troubleshooting
 
 | Issue | Fix |
 |---|---|
-| **`Segmentation fault`** when loading models | Your system `libedgetpu.so` driver version does not match your `tflite_runtime` python wheel. Ensure you are using the feranick wheels and `.deb` driver as specified in the Setup Guide. |
-| `ValueError: Failed to load delegate from libedgetpu.so.1` | Coral USB not plugged in, or `libedgetpu` not installed. Run `test_delegate.py` to verify. |
-| `No cameras available` | Check CSI ribbon cable and run `libcamera-hello` to verify the camera works. Only applies to `real_time` mode. |
-| Font warnings from Qt | Cosmetic only — does not affect functionality. Install `fonts-dejavu` if it bothers you. |
-| Very low FPS | Make sure the Coral is on a USB 3.0 port. Increase `--detect-every` to skip frames. |
-| Detections but no risk flags | Risk only triggers during red phase — press `r` in real_time mode or use `--red` in image mode. |
-| Overlapping/duplicate boxes | NMS should handle this. Try lowering `NMS_IOU_THRESHOLD` (e.g., `0.3`) for more aggressive suppression. |
+| Segmentation fault on model load/invoke | Mismatch between libedgetpu + tflite_runtime. Reinstall feranick driver/wheels exactly as above. |
+| `Failed to load delegate libedgetpu.so.1` | Coral not detected / wrong install. Re-run `test_delegate.py`. |
+| No camera | Verify CSI cable and run `libcamera-hello`. |
+| Low FPS | Use USB 3.0 for Coral, increase `--detect-every`, reduce resolution. |
+| Horizontal traffic still flagged | Tune `--approach-vx`/`--approach-vy`, verify stop line placement. |
+| Alarm chatters | Increase `--alarm-on-frames` and `--alarm-off-frames`. |
+| Too many boxes/duplicates | Raise `--conf`; tune detector dedupe constants if needed. |
+| No risk flags | Ensure red phase is active (manual toggle or light sensor state). |
+
+---
+
+## Suggested Bring-Up Procedure
+
+1. Validate TPU (`test_delegate.py`).
+2. Run `real_time` with overlays; tune stop line and approach vector.
+3. Validate with `real_time --save-frames`,~~
 
 ## License
 
