@@ -24,6 +24,10 @@ def main():
                     help="Run detection every N frames (default: 1)")
     rt.add_argument("--draw-every", type=int, default=1,
                     help="Draw overlays every N frames (default: 1)")
+    rt.add_argument("--light-sensor", action="store_true",
+                    help="Enable photoresistor gateway (GPIO pin set by --light-pin)")
+    rt.add_argument("--light-pin", type=int, default=17,
+                    help="GPIO pin for light sensor input (default: 17)")
 
     # ---- images ----
     img = subparsers.add_parser("images", help="Run detection on a folder of images")
@@ -50,6 +54,10 @@ def main():
                      help="After processing, play output images as a video slideshow")
     img.add_argument("--fps", type=int, default=10,
                      help="Playback/inference FPS (default: 10)")
+    img.add_argument("--light-sensor", action="store_true",
+                     help="Enable photoresistor gateway in --real-time mode (GPIO pin set by --light-pin)")
+    img.add_argument("--light-pin", type=int, default=17,
+                     help="GPIO pin for light sensor input (default: 17)")
 
     # ---- animate ----
     anim = subparsers.add_parser("animate", help="Play a folder of images as a video slideshow")

@@ -3,7 +3,6 @@ import os
 import shutil
 import sys
 import glob
-from detector.coral_yolo_detector import CoralYOLODetector
 from tracking.simple_tracker import SimpleTracker
 from risk.risk_logic import evaluate_risk
 from drawing.overlay import draw_tracks
@@ -129,8 +128,6 @@ def run_images(args):
         print(f"Red phase: OFF | Stop line: {args.stop_line}")
 
     # ---------------- INIT ----------------
-    
-    # Dynamically select the right parser based on model name
     if "yolo" in args.model.lower():
         from detector.coral_yolo_detector import CoralYOLODetector
         detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
@@ -175,11 +172,11 @@ def run_images(args):
             tracks = []
             for i, det in enumerate(detections):
                 cx, cy, x, y, bw, bh = det
-                tracks.append((i, cx, cy, x, y, bw, bh, 0))
+                tracks.append((i, cx, cy, x, y, bw, bh, 0, False))
         else:
             tracks = tracker.update(detections)
 
-        # Determine red phase for this frame
+        # Determine red phase for this frame (existing behavior kept)
         if transitions:
             is_red_phase = get_red_phase_for_frame(idx, transitions)
         else:
@@ -188,9 +185,9 @@ def run_images(args):
         # Update violation status for each track
         updated_tracks = []
         for track in tracks:
-            tid, cx, cy, x, y, w_box, h_box, speed, violation = track
             from risk.risk_logic import update_violation_status
             updated_violation = update_violation_status(track, stop_line_y, is_red_phase)
+            tid, cx, cy, x, y, w_box, h_box, speed, _ = track
             updated_tracks.append((tid, cx, cy, x, y, w_box, h_box, speed, updated_violation))
         
         # Draw
@@ -233,7 +230,7 @@ def run_images_real_time(args):
 
     print(f"Found {len(image_paths)} images in '{args.input}'")
     
-    # Parse transitions if provided
+    # Parse transitions if provided (feature kept)
     transitions = None
     if args.transitions:
         transitions = parse_transitions(args.transitions, len(image_paths))
@@ -247,8 +244,6 @@ def run_images_real_time(args):
     print("Press 'q' to stop, SPACE to pause/resume, a/d to step frames")
 
     # ---------------- INIT ----------------
-    
-    # Dynamically select the right parser based on model name
     if "yolo" in args.model.lower():
         from detector.coral_yolo_detector import CoralYOLODetector
         detector = CoralYOLODetector(args.model, conf_threshold=args.conf)
@@ -257,6 +252,14 @@ def run_images_real_time(args):
         detector = CoralTFODDetector(args.model, conf_threshold=args.conf)
     
     tracker = SimpleTracker(fixed_dt=1.0 / args.fps)
+
+    # Optional light sensor gateway (new)
+    light_sensor = None
+    if args.light_sensor:
+        from sensors.light_sensor import LightSensor
+        light_sensor = LightSensor(pin=args.light_pin)
+        light_sensor.start()
+        print(f"Light sensor enabled on GPIO {args.light_pin}")
 
     cv2.namedWindow("Traffic Vision — Real-Time", cv2.WINDOW_AUTOSIZE)
 
@@ -270,91 +273,101 @@ def run_images_real_time(args):
     print(f"\n{'Frame':<8} {'Phase':<8} {'Dets':<6} {'FPS':<8} {'Time':<8}")
     print("-" * 45)
 
-    while idx < total:
-        frame_start = cv2.getTickCount()
-        
-        img_path = image_paths[idx]
-        frame = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        if frame is None:
-            print(f"[{idx+1}/{total}] SKIP (unreadable): {os.path.basename(img_path)}")
-            idx += 1
-            continue
-
-        # Ensure 3-channel BGR regardless of source format
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        elif frame.shape[2] == 4:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-        h, w, _ = frame.shape
-        stop_line_y = int(args.stop_line * h)
-
-        # Detect
-        detections = detector.detect(frame)
-
-        # Track
-        if args.no_track:
-            tracks = []
-            for i, det in enumerate(detections):
-                cx, cy, x, y, bw, bh = det
-                tracks.append((i, cx, cy, x, y, bw, bh, 0))
-        else:
-            tracks = tracker.update(detections)
-
-        # Determine red phase for this frame
-        if transitions:
-            is_red_phase = get_red_phase_for_frame(idx, transitions)
-        else:
-            is_red_phase = args.red
-
-        # Draw
-        draw_tracks(frame, tracks, evaluate_risk, is_red_phase, stop_line_y)
-
-        # Calculate processing time
-        processing_time_ms = (cv2.getTickCount() - frame_start) / cv2.getTickFrequency() * 1000
-        
-        # Add frame info overlay
-        frame_label = f"Frame {idx+1}/{total}"
-        cv2.putText(frame, frame_label, (20, frame.shape[0] - 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        time_label = f"Process: {processing_time_ms:.1f}ms"
-        cv2.putText(frame, time_label, (20, frame.shape[0] - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        if paused:
-            cv2.putText(frame, "PAUSED", (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-        cv2.imshow("Traffic Vision — Real-Time", frame)
-
-        # Calculate wait time to maintain target FPS
-        wait_time = max(1, int(target_frame_time - processing_time_ms))
-        key = cv2.waitKey(0 if paused else wait_time) & 0xFF
-
-        # Handle keyboard input
-        if key == ord('q') or key == 27:
-            break
-        elif key == ord(' '):
-            paused = not paused
-        elif key == ord('d') or key == 83:
-            idx = min(idx + 1, total - 1)
-        elif key == ord('a') or key == 81:
-            idx = max(idx - 1, 0)
-        else:
-            if not paused:
-                # Track frame time
-                frame_times.append(processing_time_ms)
-                
-                # Print stats
-                n_det = len(tracks)
-                phase_str = "RED" if is_red_phase else "GREEN"
-                avg_fps = 1000 / (sum(frame_times[-30:]) / len(frame_times[-30:])) if frame_times else 0
-                print(f"{idx+1:<8} {phase_str:<8} {n_det:<6} {avg_fps:>6.1f}   {processing_time_ms:>6.1f}ms")
-                
+    try:
+        while idx < total:
+            frame_start = cv2.getTickCount()
+            
+            img_path = image_paths[idx]
+            frame = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            if frame is None:
+                print(f"[{idx+1}/{total}] SKIP (unreadable): {os.path.basename(img_path)}")
                 idx += 1
+                continue
 
-    cv2.destroyAllWindows()
+            # Ensure 3-channel BGR regardless of source format
+            if len(frame.shape) == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+            h, w, _ = frame.shape
+            stop_line_y = int(args.stop_line * h)
+
+            # Phase selection priority:
+            # 1) light sensor if enabled
+            # 2) transitions (existing feature)
+            # 3) --red flag (existing feature)
+            if light_sensor is not None:
+                is_red_phase = light_sensor.is_red()
+            elif transitions:
+                is_red_phase = get_red_phase_for_frame(idx, transitions)
+            else:
+                is_red_phase = args.red
+
+            # Gate detection for power savings (new)
+            if is_red_phase:
+                detections = detector.detect(frame)
+                if args.no_track:
+                    tracks = []
+                    for i, det in enumerate(detections):
+                        cx, cy, x, y, bw, bh = det
+                        tracks.append((i, cx, cy, x, y, bw, bh, 0, False))
+                else:
+                    tracks = tracker.update(detections)
+            else:
+                # green phase -> skip detections
+                tracks = tracker.update([])
+
+            # Draw
+            draw_tracks(frame, tracks, evaluate_risk, is_red_phase, stop_line_y)
+
+            # Calculate processing time
+            processing_time_ms = (cv2.getTickCount() - frame_start) / cv2.getTickFrequency() * 1000
+            
+            # Add frame info overlay
+            frame_label = f"Frame {idx+1}/{total}"
+            cv2.putText(frame, frame_label, (20, frame.shape[0] - 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            time_label = f"Process: {processing_time_ms:.1f}ms"
+            cv2.putText(frame, time_label, (20, frame.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            if paused:
+                cv2.putText(frame, "PAUSED", (20, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+            cv2.imshow("Traffic Vision — Real-Time", frame)
+
+            # Calculate wait time to maintain target FPS
+            wait_time = max(1, int(target_frame_time - processing_time_ms))
+            key = cv2.waitKey(0 if paused else wait_time) & 0xFF
+
+            # Handle keyboard input
+            if key == ord('q') or key == 27:
+                break
+            elif key == ord(' '):
+                paused = not paused
+            elif key == ord('d') or key == 83:
+                idx = min(idx + 1, total - 1)
+            elif key == ord('a') or key == 81:
+                idx = max(idx - 1, 0)
+            else:
+                if not paused:
+                    # Track frame time
+                    frame_times.append(processing_time_ms)
+                    
+                    # Print stats
+                    n_det = len(tracks)
+                    phase_str = "RED" if is_red_phase else "GREEN"
+                    avg_fps = 1000 / (sum(frame_times[-30:]) / len(frame_times[-30:])) if frame_times else 0
+                    print(f"{idx+1:<8} {phase_str:<8} {n_det:<6} {avg_fps:>6.1f}   {processing_time_ms:>6.1f}ms")
+                    
+                    idx += 1
+    finally:
+        cv2.destroyAllWindows()
+        if light_sensor:
+            light_sensor.stop()
     
     if frame_times:
         avg_time = sum(frame_times) / len(frame_times)

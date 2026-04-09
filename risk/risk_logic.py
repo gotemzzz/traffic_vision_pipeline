@@ -1,6 +1,8 @@
-MIN_SPEED = 80
+# UPDATED: These thresholds now work with perspective-corrected speeds
+# The perspective correction (3x for distant vehicles) means speeds are more realistic
+MIN_SPEED = 35  # Lowered from 80 (now 35 px/s ~= actual threat)
 MAX_DIST = 200
-VIOLATION_DIST = -20  # How far past the line counts as violation (negative = past)
+VIOLATION_DIST = -20
 
 
 def evaluate_risk(red_phase, cy, stop_line, speed, violation_history=None):
@@ -11,7 +13,7 @@ def evaluate_risk(red_phase, cy, stop_line, speed, violation_history=None):
         red_phase: Whether the light is currently red
         cy: Vehicle center Y position
         stop_line: Y coordinate of stop line
-        speed: Current speed in pixels/frame
+        speed: Current speed in pixels/frame (now perspective-corrected)
         violation_history: Optional bool indicating if vehicle already violated
     
     Returns:
@@ -28,8 +30,7 @@ def evaluate_risk(red_phase, cy, stop_line, speed, violation_history=None):
         return True
     
     # **Secondary violation**: Car approaching/crossing with high speed
-    # 0 < dist < MAX_DIST means approaching from above
-    # dist < 0 means already past the line
+    # Now using perspective-corrected speed for more accurate early detection
     if dist < MAX_DIST and speed > MIN_SPEED:
         return True
 
@@ -61,7 +62,6 @@ def update_violation_status(track, stop_line, red_phase):
         return True
     
     # If passing the line on red, mark as violated
-    # Vehicle crosses if dist goes from positive to negative or ≤ 0
     if dist <= VIOLATION_DIST:
         return True
     

@@ -4,9 +4,15 @@ import time
 
 MAX_MATCH_DIST = 80
 STALE_TIMEOUT = 1.0
-SPEED_SMOOTHING = 0.25  # Increased from 0.4 for better stability
-MIN_MOVE_PX = 3  # Increased from 2 to reduce jitter
-STATIONARY_SPEED_THRESHOLD = 5.0  # Lock speed at 0 if below this
+SPEED_SMOOTHING = 0.25
+MIN_MOVE_PX = 3
+STATIONARY_SPEED_THRESHOLD = 5.0
+
+# Perspective correction parameters
+PERSPECTIVE_SCALE_ENABLED = True
+REFERENCE_BBOX_AREA = 6400  # ~80x80 px as reference (adjust if needed)
+MIN_SCALE_FACTOR = 1.0  # Don't scale below 1.0 (closest vehicles)
+MAX_SCALE_FACTOR = 3.5  # Max correction (distant vehicles). Tune this!
 
 
 class SimpleTracker:
@@ -60,6 +66,16 @@ class SimpleTracker:
                 else:
                     inst_speed = dist / dt if dt > 0 else 0.0
 
+                # Apply perspective correction based on bbox size
+                if PERSPECTIVE_SCALE_ENABLED:
+                    bbox_area = w * h
+                    # Larger bbox = closer to camera = smaller scale factor
+                    # Smaller bbox = farther from camera = larger scale factor
+                    scale_factor = REFERENCE_BBOX_AREA / max(bbox_area, 1)
+                    # Clamp to reasonable range
+                    scale_factor = max(MIN_SCALE_FACTOR, min(scale_factor, MAX_SCALE_FACTOR))
+                    inst_speed *= scale_factor
+
                 prev_speed = data["speed"]
                 if prev_speed == 0:
                     smoothed = inst_speed
@@ -87,8 +103,8 @@ class SimpleTracker:
                     "bbox": (x, y, w, h),
                     "speed": 0,
                     "matched": True,
-                    "violation": False,  # Track if vehicle ever violated
-                    "violation_frame": None  # Frame when violation occurred
+                    "violation": False,
+                    "violation_frame": None
                 }
 
         stale_ids = [
