@@ -112,6 +112,18 @@ def main():
     mon.add_argument("--approach-vy", type=float, default=1.0,
                      help="Approach direction vector Y component")
 
+    # NEW: Image feed support
+    mon.add_argument("--image-feed", type=str, default=None,
+                     help="Path to folder of images to process instead of live camera (for CARLA testing)")
+    mon.add_argument("--fps", type=int, default=10,
+                     help="FPS for image feed playback (default: 10)")
+    mon.add_argument("--render", action="store_true",
+                     help="Enable frame rendering for visual feedback")
+    mon.add_argument("--render-every", type=int, default=3,
+                     help="Render every Nth frame (default: 3, reduces Pi load)")
+    mon.add_argument("--loop-feed", action="store_true",
+                     help="Loop image feed when end is reached")
+
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)

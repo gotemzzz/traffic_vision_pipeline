@@ -1,6 +1,8 @@
 import sys
 import time
-from picamera2 import Picamera2
+import os
+import glob
+import cv2
 from tracking.simple_tracker import SimpleTracker
 from risk.risk_logic import evaluate_risk, update_violation_status
 
@@ -8,6 +10,11 @@ try:
     import RPi.GPIO as GPIO
 except Exception:
     GPIO = None
+
+try:
+    from picamera2 import Picamera2
+except Exception:
+    Picamera2 = None
 
 
 class AlarmLatch:
@@ -50,11 +57,39 @@ def _track_with_violation(track, violation_bool):
         return (tid, cx, cy, x, y, bw, bh, speed, violation_bool, 0.0, 0.0, True)
 
 
+def gather_images(directory):
+    """Collect and sort all image files in a directory."""
+    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+    return sorted([
+        p for p in glob.glob(os.path.join(directory, "*"))
+        if os.path.splitext(p)[1].lower() in IMAGE_EXTS
+    ])
+
+
 def run_monitor(args):
     width = args.width
     height = args.height
     stop_line_rel = args.stop_line
     detect_every = args.detect_every
+    
+    # NEW: Image feed support
+    use_image_feed = args.image_feed is not None
+    render_enabled = bool(getattr(args, "render", False))
+    render_every = max(1, int(getattr(args, "render_every", 3)))
+    loop_feed = bool(getattr(args, "loop_feed", False))
+    fps = int(getattr(args, "fps", 10))
+    frame_delay_ms = 1000 / fps if fps > 0 else 0
+
+    if use_image_feed:
+        if not os.path.isdir(args.image_feed):
+            print(f"[MONITOR] ERROR: image feed directory '{args.image_feed}' does not exist")
+            sys.exit(1)
+        image_paths = gather_images(args.image_feed)
+        if not image_paths:
+            print(f"[MONITOR] ERROR: no images found in '{args.image_feed}'")
+            sys.exit(1)
+        print(f"[MONITOR] Image feed mode: {len(image_paths)} images from '{args.image_feed}'")
+        print(f"[MONITOR] Rendering: {'ON (every {render_every} frame)' if render_enabled else 'OFF'}")
 
     # Detector selection
     if "yolo" in args.model.lower():
@@ -67,6 +102,7 @@ def run_monitor(args):
     tracker = SimpleTracker()
 
     # Light sensor REQUIRED in monitor mode
+    light_sensor = None
     try:
         from sensors.light_sensor import LightSensor
         light_sensor = LightSensor(pin=args.light_pin)
@@ -93,15 +129,25 @@ def run_monitor(args):
 
     latch = AlarmLatch(on_frames=args.alarm_on_frames, off_frames=args.alarm_off_frames)
 
-    # Camera
-    picam2 = Picamera2()
-    config = picam2.create_preview_configuration(main={"size": (width, height)})
-    picam2.configure(config)
-    picam2.start()
+    # Camera OR Image feed
+    if not use_image_feed:
+        if Picamera2 is None:
+            print("[MONITOR] ERROR: Picamera2 not available. Use --image-feed for testing without camera.")
+            light_sensor.stop()
+            sys.exit(2)
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(main={"size": (width, height)})
+        picam2.configure(config)
+        picam2.start()
+    
+    # Setup rendering window if enabled
+    if render_enabled:
+        cv2.namedWindow("Monitor — Visual Feedback", cv2.WINDOW_AUTOSIZE)
 
     frame_counter = 0
     t0 = time.time()
     prev_alarm_state = False
+    image_idx = 0  # For image feed cycling
 
     print("[MONITOR] running. Ctrl+C to stop.")
     print(f"[MONITOR] mode: {'DRY-RUN' if dry_run else 'LIVE'} | "
@@ -109,7 +155,34 @@ def run_monitor(args):
 
     try:
         while True:
-            frame = picam2.capture_array()
+            # Get frame from camera or image feed
+            if use_image_feed:
+                img_path = image_paths[image_idx % len(image_paths)]
+                frame = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                if frame is None:
+                    print(f"[MONITOR] WARNING: could not read {img_path}, skipping")
+                    image_idx += 1
+                    continue
+                
+                # Resize to target dimensions if needed
+                if frame.shape[0] != height or frame.shape[1] != width:
+                    frame = cv2.resize(frame, (width, height))
+                
+                image_idx += 1
+                if image_idx >= len(image_paths):
+                    if loop_feed:
+                        image_idx = 0
+                        print(f"[MONITOR] looping image feed from start")
+                    else:
+                        print(f"[MONITOR] image feed exhausted, stopping")
+                        break
+                
+                # Frame timing
+                if frame_delay_ms > 0:
+                    time.sleep(frame_delay_ms / 1000.0)
+            else:
+                frame = picam2.capture_array()
+
             h, w, _ = frame.shape
             stop_line_y = int(stop_line_rel * h)
             frame_counter += 1
@@ -166,10 +239,27 @@ def run_monitor(args):
                     print(f"[MONITOR] ALARM -> {state_txt}")
                 prev_alarm_state = alarm_state
 
+            # Optional rendering for visual feedback (minimal overhead - just raw frame + light state)
+            if render_enabled and (frame_counter % render_every == 0):
+                frame_copy = frame.copy()
+                
+                # Simple light state indicator (top-left corner)
+                phase_color = (0, 0, 255) if red_phase else (0, 255, 0)  # BGR: red or green
+                phase_text = "RED" if red_phase else "GREEN"
+                cv2.circle(frame_copy, (30, 30), 15, phase_color, -1)
+                cv2.putText(frame_copy, phase_text, (55, 35),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, phase_color, 2)
+                
+                cv2.imshow("Monitor — Visual Feedback", frame_copy)
+                # Non-blocking display update
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:
+                    break
+
             if frame_counter % 10 == 0:
                 elapsed = time.time() - t0
-                fps = frame_counter / elapsed if elapsed > 0 else 0.0
-                print(f"[MONITOR] fps={fps:.1f} red={red_phase} tracks={len(updated_tracks)} "
+                fps_actual = frame_counter / elapsed if elapsed > 0 else 0.0
+                print(f"[MONITOR] fps={fps_actual:.1f} red={red_phase} tracks={len(updated_tracks)} "
                       f"viol_now={any_violation_now} alarm={alarm_state}")
 
             time.sleep(0.001)
@@ -177,8 +267,11 @@ def run_monitor(args):
     except KeyboardInterrupt:
         print("\n[MONITOR] stopping...")
     finally:
-        picam2.stop()
+        if not use_image_feed:
+            picam2.stop()
         light_sensor.stop()
         if alarm_enabled and not dry_run:
             GPIO.output(args.alarm_pin, GPIO.LOW)
             GPIO.cleanup(args.alarm_pin)
+        if render_enabled:
+            cv2.destroyAllWindows()
