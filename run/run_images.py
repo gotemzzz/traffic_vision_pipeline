@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import glob
+import json
 from tracking.simple_tracker import SimpleTracker
 from risk.risk_logic import evaluate_risk
 from drawing.overlay import draw_tracks
@@ -148,6 +149,7 @@ def run_images(args):
 
     # ---------------- PROCESS ----------------
     output_paths = []
+    violations_metadata = []  # Track violation data for each frame
 
     for idx, img_path in enumerate(image_paths):
         frame = cv2.imread(img_path, cv2.IMREAD_COLOR)
@@ -184,31 +186,63 @@ def run_images(args):
 
         # Update violation status for each track
         updated_tracks = []
+        frame_has_violation = False
         for track in tracks:
             from risk.risk_logic import update_violation_status
             updated_violation = update_violation_status(track, stop_line_y, is_red_phase)
             tid, cx, cy, x, y, w_box, h_box, speed, _ = track
             updated_tracks.append((tid, cx, cy, x, y, w_box, h_box, speed, updated_violation))
+            if updated_violation:
+                frame_has_violation = True
+        
+        # Store metadata for this frame
+        filename = os.path.splitext(os.path.basename(img_path))[0] + ".png"
+        violations_metadata.append({
+            "frame_idx": idx,
+            "filename": filename,
+            "is_red_phase": is_red_phase,
+            "has_violation": frame_has_violation,
+            "num_detections": len(updated_tracks)
+        })
         
         # Draw
         draw_tracks(frame, updated_tracks, evaluate_risk, is_red_phase, stop_line_y)
 
         # Save — always as PNG for consistency
-        filename = os.path.splitext(os.path.basename(img_path))[0] + ".png"
         out_path = os.path.join(args.output, filename)
         cv2.imwrite(out_path, frame)
         output_paths.append(out_path)
 
         n_det = len(tracks)
         phase_str = "RED" if is_red_phase else "GREEN"
+        violation_str = " [VIOLATION]" if frame_has_violation else ""
         print(f"  [{idx+1}/{len(image_paths)}] {os.path.basename(img_path)} — "
-              f"{phase_str} | {n_det} detection{'s' if n_det != 1 else ''} → {out_path}")
+              f"{phase_str} | {n_det} detection{'s' if n_det != 1 else ''}{violation_str} → {out_path}")
 
-    print(f"\nDone! {len(output_paths)} images processed → '{args.output}'")
+    # Save violations metadata as JSON
+    metadata_path = os.path.join(args.output, "violations.json")
+    with open(metadata_path, "w") as f:
+        json.dump(violations_metadata, f, indent=2)
+    print(f"\nMetadata saved to '{metadata_path}'")
+
+    print(f"Done! {len(output_paths)} images processed → '{args.output}'")
 
     # ---------------- ANIMATE ----------------
     if args.animate and output_paths:
-        animate(output_paths, args.fps)
+        # Extract animate-specific args (with defaults for non-animate modes)
+        light_sensor_enabled = getattr(args, "light_sensor", False)
+        light_pin = getattr(args, "light_pin", 17)
+        light_active_high = getattr(args, "light_active_high", False)
+        alarm_pin = getattr(args, "alarm_pin", None)
+        alarm_active_high = getattr(args, "alarm_active_high", False)
+        
+        animate(output_paths, args.fps, 
+                violations_metadata=violations_metadata,
+                light_sensor_enabled=light_sensor_enabled,
+                light_pin=light_pin,
+                light_active_high=light_active_high,
+                alarm_pin=alarm_pin,
+                alarm_active_high=alarm_active_high)
 
 
 def run_images_real_time(args):
@@ -253,13 +287,15 @@ def run_images_real_time(args):
     
     tracker = SimpleTracker(fixed_dt=1.0 / args.fps)
 
-    # Optional light sensor gateway (new)
+    # Optional light sensor gateway
     light_sensor = None
     if args.light_sensor:
         from sensors.light_sensor import LightSensor
-        light_sensor = LightSensor(pin=args.light_pin)
+        light_active_high = getattr(args, "light_active_high", False)
+        light_sensor = LightSensor(pin=args.light_pin, active_high=light_active_high)
         light_sensor.start()
-        print(f"Light sensor enabled on GPIO {args.light_pin}")
+        mode = "active HIGH" if light_active_high else "active LOW"
+        print(f"Light sensor enabled on GPIO {args.light_pin} ({mode})")
 
     cv2.namedWindow("Traffic Vision — Real-Time", cv2.WINDOW_AUTOSIZE)
 
@@ -304,7 +340,7 @@ def run_images_real_time(args):
             else:
                 is_red_phase = args.red
 
-            # Gate detection for power savings (new)
+            # Gate detection for power savings
             if is_red_phase:
                 detections = detector.detect(frame)
                 if args.no_track:
@@ -392,11 +428,44 @@ def run_animate(args):
         print(f"Error: no images found in '{args.input}'")
         sys.exit(1)
 
-    animate(image_paths, args.fps)
+    # Try to load violations metadata if it exists
+    violations_metadata = None
+    metadata_path = os.path.join(args.input, "violations.json")
+    if os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, "r") as f:
+                violations_metadata = json.load(f)
+            print(f"Loaded violations metadata from '{metadata_path}'")
+        except Exception as e:
+            print(f"Warning: Could not load violations metadata: {e}")
+
+    light_active_high = getattr(args, "light_active_high", False)
+    alarm_active_high = getattr(args, "alarm_active_high", False)
+
+    animate(image_paths, args.fps, 
+            violations_metadata=violations_metadata,
+            light_sensor_enabled=args.light_sensor,
+            light_pin=args.light_pin,
+            light_active_high=light_active_high,
+            alarm_pin=args.alarm_pin,
+            alarm_active_high=alarm_active_high)
 
 
-def animate(image_paths, fps=10):
-    """Play output images as a video slideshow in an OpenCV window."""
+def animate(image_paths, fps=10, violations_metadata=None, light_sensor_enabled=False, 
+            light_pin=17, light_active_high=False, alarm_pin=None, alarm_active_high=False):
+    """
+    Play output images as a video slideshow in an OpenCV window with optional light sensor & alarm.
+    
+    Args:
+        image_paths: List of image file paths
+        fps: Frames per second for playback
+        violations_metadata: Optional list of dicts with violation info per frame
+        light_sensor_enabled: Whether to enable light sensor input
+        light_pin: GPIO pin for light sensor
+        light_active_high: Light sensor active HIGH (vs active LOW)
+        alarm_pin: GPIO pin for alarm output (None to disable)
+        alarm_active_high: Alarm pin active HIGH (vs active LOW)
+    """
     target_frame_time = 1000 / fps
     total = len(image_paths)
 
@@ -410,47 +479,139 @@ def animate(image_paths, fps=10):
 
     cv2.namedWindow("Traffic Vision — Animate", cv2.WINDOW_AUTOSIZE)
 
+    # Initialize light sensor if enabled
+    light_sensor = None
+    if light_sensor_enabled:
+        try:
+            from sensors.light_sensor import LightSensor
+            light_sensor = LightSensor(pin=light_pin, active_high=light_active_high)
+            light_sensor.start()
+            mode = "active HIGH" if light_active_high else "active LOW"
+            print(f"Light sensor enabled on GPIO {light_pin} ({mode})")
+        except Exception as e:
+            print(f"Warning: Could not initialize light sensor: {e}")
+
+    # Initialize alarm GPIO if provided
+    alarm_state = False
+    if alarm_pin is not None:
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(alarm_pin, GPIO.OUT, initial=GPIO.LOW)
+            mode = "active HIGH" if alarm_active_high else "active LOW"
+            print(f"Alarm pin {alarm_pin} initialized ({mode})")
+        except Exception as e:
+            print(f"Warning: Could not initialize alarm pin {alarm_pin}: {e}")
+            alarm_pin = None
+
     paused = False
     idx = 0
 
-    while True:
-        frame_start = cv2.getTickCount()
+    try:
+        while True:
+            frame_start = cv2.getTickCount()
+            
+            frame = cv2.imread(image_paths[idx], cv2.IMREAD_COLOR)
+            if frame is None:
+                print(f"  Warning: skipping unreadable frame: {image_paths[idx]}")
+                idx = (idx + 1) % total
+                continue
+
+            # Get violation status from metadata if available
+            has_violation = False
+            metadata_is_red_phase = False
+            if violations_metadata and idx < len(violations_metadata):
+                has_violation = violations_metadata[idx].get("has_violation", False)
+                metadata_is_red_phase = violations_metadata[idx].get("is_red_phase", False)
+
+            # Phase selection priority:
+            # 1) light sensor if enabled
+            # 2) metadata from inference (if available)
+            # 3) default to False
+            is_red_phase = False
+            if light_sensor is not None:
+                is_red_phase = light_sensor.is_red()
+            elif violations_metadata and idx < len(violations_metadata):
+                is_red_phase = metadata_is_red_phase
+
+            # Control alarm: fire on violation + red phase
+            should_alarm = has_violation and is_red_phase
+            
+            if alarm_pin is not None:
+                try:
+                    import RPi.GPIO as GPIO
+                    if alarm_active_high:
+                        alarm_on_state = GPIO.HIGH
+                        alarm_off_state = GPIO.LOW
+                    else:
+                        alarm_on_state = GPIO.LOW
+                        alarm_off_state = GPIO.HIGH
+                    
+                    if should_alarm and not alarm_state:
+                        GPIO.output(alarm_pin, alarm_on_state)
+                        alarm_state = True
+                        print(f"[ALARM] Violation detected at frame {idx+1}")
+                    elif not should_alarm and alarm_state:
+                        GPIO.output(alarm_pin, alarm_off_state)
+                        alarm_state = False
+                except Exception as e:
+                    print(f"Warning: Could not control alarm pin: {e}")
+
+            # Display frame info
+            label = f"Frame {idx+1}/{total}"
+            cv2.putText(frame, label, (20, frame.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            if paused:
+                cv2.putText(frame, "PAUSED", (20, frame.shape[0] - 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # Display violation status (only if both conditions met)
+            if has_violation and is_red_phase:
+                cv2.putText(frame, "VIOLATION DETECTED!", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            
+            if alarm_state:
+                cv2.putText(frame, "ALARM ACTIVE", (20, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+            cv2.imshow("Traffic Vision — Animate", frame)
+
+            # Calculate how much time we spent on processing
+            elapsed_ms = (cv2.getTickCount() - frame_start) / cv2.getTickFrequency() * 1000
+            # Subtract processing time from target frame time
+            wait_time = max(1, int(target_frame_time - elapsed_ms))
+
+            key = cv2.waitKey(0 if paused else wait_time) & 0xFF
+
+            if key == ord('q') or key == 27:
+                break
+            elif key == ord(' '):
+                paused = not paused
+            elif key == ord('d') or key == 83:
+                idx = (idx + 1) % total
+            elif key == ord('a') or key == 81:
+                idx = (idx - 1) % total
+            else:
+                if not paused:
+                    idx += 1
+                    if idx >= total:
+                        idx = 0
+
+    finally:
+        cv2.destroyAllWindows()
         
-        frame = cv2.imread(image_paths[idx], cv2.IMREAD_COLOR)
-        if frame is None:
-            print(f"  Warning: skipping unreadable frame: {image_paths[idx]}")
-            idx = (idx + 1) % total
-            continue
-
-        label = f"Frame {idx+1}/{total}"
-        cv2.putText(frame, label, (20, frame.shape[0] - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        if paused:
-            cv2.putText(frame, "PAUSED", (20, frame.shape[0] - 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-        cv2.imshow("Traffic Vision — Animate", frame)
-
-        # Calculate how much time we spent on processing
-        elapsed_ms = (cv2.getTickCount() - frame_start) / cv2.getTickFrequency() * 1000
-        # Subtract processing time from target frame time
-        wait_time = max(1, int(target_frame_time - elapsed_ms))
-
-        key = cv2.waitKey(0 if paused else wait_time) & 0xFF
-
-        if key == ord('q') or key == 27:
-            break
-        elif key == ord(' '):
-            paused = not paused
-        elif key == ord('d') or key == 83:
-            idx = (idx + 1) % total
-        elif key == ord('a') or key == 81:
-            idx = (idx - 1) % total
-        else:
-            if not paused:
-                idx += 1
-                if idx >= total:
-                    idx = 0
-
-    cv2.destroyAllWindows()
+        # Cleanup light sensor
+        if light_sensor:
+            light_sensor.stop()
+        
+        # Cleanup alarm GPIO
+        if alarm_pin is not None:
+            try:
+                import RPi.GPIO as GPIO
+                GPIO.output(alarm_pin, GPIO.LOW)
+                GPIO.cleanup()
+            except Exception as e:
+                print(f"Warning: Error during GPIO cleanup: {e}")
+    
     print("Playback finished.")

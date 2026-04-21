@@ -52,7 +52,8 @@ def run_real_time(args):
     light_sensor = None
     if args.light_sensor:
         from sensors.light_sensor import LightSensor
-        light_sensor = LightSensor(pin=args.light_pin)
+        active_high = getattr(args, "light_active_high", False)
+        light_sensor = LightSensor(pin=args.light_pin, active_high=active_high)
         light_sensor.start()
 
     tepoch = time.time()

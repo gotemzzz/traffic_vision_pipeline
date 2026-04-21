@@ -32,6 +32,8 @@ def main():
                     help="Approach direction vector X component (default: 0.0)")
     rt.add_argument("--approach-vy", type=float, default=1.0,
                     help="Approach direction vector Y component (default: 1.0)")
+    rt.add_argument("--light-active-high", action="store_true",
+                    help="Light sensor is active HIGH (default: active LOW)")
 
     # NEW: optional frame saving for replay with animate
     rt.add_argument("--save-frames", action="store_true",
@@ -42,6 +44,7 @@ def main():
                     help="Save every Nth frame (default: 1)")
     rt.add_argument("--save-prefix", type=str, default="frame",
                     help="Filename prefix for saved frames (default: frame)")
+
 
     # ---- images ----
     img = subparsers.add_parser("images", help="Run detection on a folder of images")
@@ -76,6 +79,8 @@ def main():
                      help="Approach direction vector X component (default: 0.0)")
     img.add_argument("--approach-vy", type=float, default=1.0,
                      help="Approach direction vector Y component (default: 1.0)")
+    img.add_argument("--light-active-high", action="store_true",
+                    help="Light sensor is active HIGH (default: active LOW)")
 
     # ---- animate ----
     anim = subparsers.add_parser("animate", help="Play a folder of images as a video slideshow")
@@ -83,6 +88,20 @@ def main():
                       help="Path to folder of images to play")
     anim.add_argument("--fps", type=int, default=10,
                       help="Playback FPS (default: 10)")
+    anim.add_argument("--light-sensor", action="store_true",
+                      help="Enable photoresistor gateway (GPIO pin set by --light-pin)")
+    anim.add_argument("--light-pin", type=int, default=17,
+                      help="GPIO pin for light sensor input (default: 17)")
+    anim.add_argument("--alarm-pin", type=int, default=None,
+                      help="GPIO output pin for alarm signal (HIGH=alarm)")
+    anim.add_argument("--approach-vx", type=float, default=0.0,
+                      help="Approach direction vector X component (default: 0.0)")
+    anim.add_argument("--approach-vy", type=float, default=1.0,
+                      help="Approach direction vector Y component (default: 1.0)")
+    anim.add_argument("--light-active-high", action="store_true",
+                    help="Light sensor is active HIGH (default: active LOW)")
+    anim.add_argument("--alarm-active-high", action="store_true",
+                     help="Alarm pin is active HIGH (default: active LOW)")
 
     # ---- monitor ----
     mon = subparsers.add_parser("monitor", help="Headless production mode (no drawing, alarm GPIO, light sensor required)")
@@ -111,6 +130,10 @@ def main():
                      help="Approach direction vector X component")
     mon.add_argument("--approach-vy", type=float, default=1.0,
                      help="Approach direction vector Y component")
+    mon.add_argument("--light-active-high", action="store_true",
+                    help="Light sensor is active HIGH (default: active LOW)")
+    mon.add_argument("--alarm-active-high", action="store_true",
+                     help="Alarm pin is active HIGH (default: active LOW)")
 
     # NEW: Image feed support
     mon.add_argument("--image-feed", type=str, default=None,

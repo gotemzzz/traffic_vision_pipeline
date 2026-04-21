@@ -7,14 +7,15 @@ class LightSensor:
     """
     Digital light gate sensor.
 
-    Convention used here:
-      GPIO reads 0 -> RED phase (run detection)
-      GPIO reads 1 -> GREEN phase (skip detection)
+    Convention:
+      active_low=True (default): GPIO reads 0 -> RED phase (run detection)
+      active_low=False: GPIO reads 1 -> RED phase (run detection)
     """
 
-    def __init__(self, pin=17, poll_interval=0.05):
+    def __init__(self, pin=17, poll_interval=0.05, active_low=True):
         self.pin = pin
         self.poll_interval = poll_interval
+        self.active_low = active_low
         self.running = False
         self._is_red = False
         self._lock = threading.Lock()
@@ -28,7 +29,8 @@ class LightSensor:
         self.running = True
         t = threading.Thread(target=self._loop, daemon=True)
         t.start()
-        print(f"[SENSOR] Light sensor started on GPIO {self.pin}")
+        mode = "active LOW" if self.active_low else "active HIGH"
+        print(f"[SENSOR] Light sensor started on GPIO {self.pin} ({mode})")
 
     def stop(self):
         self.running = False
@@ -44,5 +46,8 @@ class LightSensor:
         while self.running:
             val = GPIO.input(self.pin)
             with self._lock:
-                self._is_red = (val == 0)
+                if self.active_low:
+                    self._is_red = (val == 0)
+                else:
+                    self._is_red = (val == 1)
             time.sleep(self.poll_interval)
